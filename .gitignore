@@ -1,4 +1,17 @@
-.env
-.venv/
 __pycache__/
 *.pyc
+*.pyo
+.env
+venv/
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# local mock commerce db
+app/commerce.db
+
+# uploaded docs at runtime (keep the seed one tracked, ignore ad-hoc uploads)
+app/docs/*
+!app/docs/refund_policy.md
+
+.DS_Store
