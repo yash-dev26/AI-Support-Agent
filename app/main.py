@@ -1,50 +1,38 @@
 """
-FastAPI wrapper around the LangGraph support agent.
-
-Why this exists: the original app.py/support.py were CLI scripts with a
-`while True: continue` busy-wait poll loop — that pins a CPU core and only
-supports one hardcoded thread. This turns the same graph into a real
-multi-tenant service:
-
-  POST /chat/{user_id}            -> talk to the agent, get escalated or resolved
-  GET  /support/pending            -> list every thread currently waiting on a human
-  POST /support/resolve/{thread_id} -> resume a paused thread with human input
-  GET  /metrics                    -> escalation rate, avg resolution time, tool usage
-  POST /docs/upload                -> drop a company doc in for check_policy to use
-
-Visit /docs for a live Swagger UI you can click through end to end —
-that's the "UI" for this project.
+App assembly only. Endpoint logic lives in app/routers/*; lifespan wires up
+Mongo + the compiled graph once at startup and stores them in app/deps.py
+so routers can read them without a circular import back to this file.
 """
-
 import os
-import time
-import shutil
-from datetime import datetime, timezone
+import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from pydantic import BaseModel
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from langgraph.checkpoint.mongodb import MongoDBSaver
-from langgraph.types import Command
 from pymongo import MongoClient
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.graph import create_graph_chat
-from app import mock_db
-from app.doc_store import DOCS_DIR
+from app.services import mock_db
+from app.services import vector_store
+from app.core import deps
+from app.core.rate_limit import limiter
+from app.routers import chat, support, metrics, docs, health, auth
 
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
 
 MONGODB_URI = os.getenv("MONGODB_URI")
-mongo_client = None
-checkpointer_cm = None
-graph_app = None
+FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global mongo_client, checkpointer_cm, graph_app
     if not MONGODB_URI:
         raise RuntimeError("MONGODB_URI is not set in the environment variables.")
 
@@ -53,7 +41,18 @@ async def lifespan(app: FastAPI):
     checkpointer = checkpointer_cm.__enter__()
     graph_app = create_graph_chat(checkpointer=checkpointer)
 
+    deps.set_mongo_client(mongo_client)
+    deps.set_graph_app(graph_app)
+
     mock_db.seed(num_users=20)  # no-op if already seeded
+
+    try:
+        vector_store.index_all_docs()  # idempotent — safe to run every startup
+    except Exception:
+        logging.getLogger("support_agent.startup").exception(
+            "Failed to index docs into Qdrant at startup — check_policy's RAG "
+            "path will return NO_ANSWER_FOUND until this succeeds."
+        )
 
     yield
 
@@ -67,147 +66,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
-def _metrics_col():
-    return mongo_client["support_agent"]["events"]
+app.include_router(auth.router)
+app.include_router(chat.router)
+app.include_router(support.router)
+app.include_router(metrics.router)
+app.include_router(docs.router)
+app.include_router(health.router)
 
-
-def _log_event(event_type: str, thread_id: str, **extra):
-    _metrics_col().insert_one({
-        "event_type": event_type,
-        "thread_id": thread_id,
-        "timestamp": datetime.now(timezone.utc),
-        **extra,
-    })
-
-
-class ChatRequest(BaseModel):
-    message: str
-
-
-class ResolveRequest(BaseModel):
-    resolution: str
-
-
-@app.post("/chat/{user_id}")
-def chat(user_id: str, req: ChatRequest):
-    """Send a message to the agent for a given user. Returns either a normal
-    reply or an escalation notice if the agent paused for human input."""
-    config = {"configurable": {"thread_id": user_id}}
-
-    state = graph_app.get_state(config)
-    if getattr(state, "interrupts", ()):
-        return {
-            "status": "escalated",
-            "message": "Your request is being handled by support. Please wait for a resolution.",
-        }
-
-    start = time.monotonic()
-    last_messages = []
-    for chunk in graph_app.stream(
-        {"messages": [{"role": "user", "content": req.message}]},
-        config=config,
-        stream_mode="values",
-    ):
-        if "messages" in chunk:
-            last_messages = chunk["messages"]
-
-    new_state = graph_app.get_state(config)
-    if getattr(new_state, "interrupts", ()):
-        payload = new_state.interrupts[0].value or {}
-        _log_event("escalated", user_id, query=payload.get("query"))
-        return {
-            "status": "escalated",
-            "message": "Your request has been escalated to a human agent. Please wait.",
-        }
-
-    _log_event("resolved_by_agent", user_id, latency_ms=int((time.monotonic() - start) * 1000))
-    reply = last_messages[-1].content if last_messages else ""
-    return {"status": "ok", "reply": reply}
-
-
-@app.get("/support/pending")
-def list_pending():
-    """All threads currently paused on a human-in-the-loop interrupt."""
-    pending = []
-    with mock_db.get_conn() as conn:
-        known_users = [row["user_id"] for row in conn.execute("SELECT user_id FROM users").fetchall()]
-
-    for user_id in known_users:
-        config = {"configurable": {"thread_id": user_id}}
-        state = graph_app.get_state(config)
-        interrupts = getattr(state, "interrupts", ())
-        if interrupts:
-            payload = interrupts[0].value or {}
-            pending.append({
-                "thread_id": user_id,
-                "query": payload.get("query"),
-                "message": payload.get("message"),
-            })
-    return {"pending": pending}
-
-
-@app.post("/support/resolve/{thread_id}")
-def resolve(thread_id: str, req: ResolveRequest):
-    """Support agent resumes a paused thread with their resolution."""
-    config = {"configurable": {"thread_id": thread_id}}
-    state = graph_app.get_state(config)
-    if not getattr(state, "interrupts", ()):
-        raise HTTPException(status_code=404, detail="No pending interrupt for this thread.")
-
-    resume_start = time.monotonic()
-    resume_command = Command(resume={"data": req.resolution})
-    last_messages = []
-    for event in graph_app.stream(resume_command, config=config, stream_mode="values"):
-        if "messages" in event:
-            last_messages = event["messages"]
-
-    _log_event(
-        "resolved_by_human", thread_id,
-        resolution_latency_ms=int((time.monotonic() - resume_start) * 1000),
-    )
-    reply = last_messages[-1].content if last_messages else ""
-    return {"status": "resumed", "final_reply": reply}
-
-
-@app.post("/docs/upload")
-async def upload_doc(file: UploadFile = File(...)):
-    """Upload a company doc (.txt/.md) that check_policy can search against."""
-    if file.filename is None or not file.filename.lower().endswith((".txt", ".md")):
-        raise HTTPException(status_code=400, detail="Only .txt and .md files are supported.")
-    DOCS_DIR.mkdir(exist_ok=True)
-    dest = DOCS_DIR / file.filename
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
-    return {"status": "uploaded", "filename": file.filename}
-
-
-@app.get("/metrics")
-def metrics():
-    """Escalation rate, avg time-to-resolution, tool usage breakdown."""
-    col = _metrics_col()
-    total = col.count_documents({"event_type": {"$in": ["resolved_by_agent", "escalated"]}})
-    escalated = col.count_documents({"event_type": "escalated"})
-    resolved_by_human = list(col.find({"event_type": "resolved_by_human"}))
-
-    avg_resolution_ms = (
-        sum(e["resolution_latency_ms"] for e in resolved_by_human) / len(resolved_by_human)
-        if resolved_by_human else None
-    )
-    avg_agent_latency = list(col.find({"event_type": "resolved_by_agent"}))
-    avg_agent_ms = (
-        sum(e["latency_ms"] for e in avg_agent_latency) / len(avg_agent_latency)
-        if avg_agent_latency else None
-    )
-
-    return {
-        "total_conversations": total,
-        "escalation_rate": round(escalated / total, 3) if total else None,
-        "avg_agent_latency_ms": avg_agent_ms,
-        "avg_human_resolution_ms": avg_resolution_ms,
-        "total_escalations": escalated,
-        "total_human_resolutions": len(resolved_by_human),
-    }
+# Demo frontend only — NOT the project's real interface (that's the API
+# itself, see /docs). Served same-origin so the page's fetch()/WebSocket
+# calls need no CORS configuration. Mounted last so it doesn't shadow any
+# API route above.
+if FRONTEND_DIR.exists():
+    app.mount("/ui", StaticFiles(directory=FRONTEND_DIR, html=True), name="ui")
 
 
 @app.get("/")
@@ -215,5 +90,8 @@ def root():
     return {
         "service": "support-agent-infra",
         "docs": "/docs",
-        "note": "Interactive Swagger UI at /docs — no separate frontend needed.",
+        "demo_ui": "/ui/",
+        "note": "Interactive Swagger UI at /docs. A demo frontend with real-time "
+                "push (auto-connecting websocket, no manual steps) is also "
+                "available at /ui/.",
     }

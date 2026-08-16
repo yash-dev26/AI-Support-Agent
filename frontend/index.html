@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<!--
+  Demo prototype only — NOT a production frontend. The real interface is
+  the API itself (see /docs). This exists to show the human-in-the-loop
+  flow working end to end, with genuine real-time push.
+
+  Once a thread escalates, the user's messages stop reaching the LLM
+  entirely — the backend routes them into a side-channel the support
+  agent can see and reply to directly (see app/escalation_store.py). This
+  page reflects that: the chat input stays live during escalation, but
+  every message just gets relayed to the human until they click "Mark
+  Resolved," at which point the LLM path reopens automatically.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Support Agent — Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0b0f;
+    --bg-elevated: #16161c;
+    --border: #26262f;
+    --border-soft: #1d1d24;
+    --text: #e8e8ec;
+    --text-dim: #9494a0;
+    --text-faint: #6b6b76;
+    --accent: #4f7fff;
+    --accent-hover: #6690ff;
+    --accent-soft: rgba(79, 127, 255, 0.12);
+    --green: #22c55e;
+    --amber: #f5a623;
+    --danger: #ef4444;
+    --danger-soft: rgba(239, 68, 68, 0.12);
+    --radius: 12px;
+    --radius-sm: 8px;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.25);
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background:
+      radial-gradient(1200px 600px at 15% -10%, rgba(79,127,255,0.08), transparent),
+      var(--bg);
+    color: var(--text); margin: 0; padding: 0; min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    padding: 1.1rem 1.75rem; border-bottom: 1px solid var(--border-soft);
+    display: flex; align-items: center; justify-content: space-between;
+    background: rgba(11,11,15,0.85); backdrop-filter: blur(10px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  h1 {
+    font-size: 1.05rem; margin: 0; font-weight: 600; letter-spacing: -0.01em;
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  .badge {
+    font-size: 0.72rem; color: var(--text-dim); border: 1px solid var(--border);
+    border-radius: 999px; padding: 0.25rem 0.7rem; background: var(--bg-elevated);
+  }
+  .badge a { color: var(--accent); text-decoration: none; }
+  .badge a:hover { text-decoration: underline; }
+
+  nav {
+    display: flex; gap: 0.4rem; padding: 0.85rem 1.75rem;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  nav button {
+    background: none; border: 1px solid transparent; color: var(--text-dim);
+    padding: 0.45rem 1rem; border-radius: 999px; cursor: pointer;
+    font-size: 0.87rem; font-weight: 500; font-family: inherit;
+    transition: all 0.15s ease;
+  }
+  nav button:hover { color: var(--text); background: var(--bg-elevated); }
+  nav button.active {
+    background: var(--accent); border-color: var(--accent); color: white;
+    box-shadow: 0 2px 8px rgba(79,127,255,0.35);
+  }
+
+  main { padding: 2rem 1.75rem; max-width: 720px; margin: 0 auto; }
+  .view { display: none; }
+  .view.active { display: block; animation: fadeIn 0.2s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .row { display: flex; gap: 0.6rem; margin-bottom: 1.1rem; }
+  input[type=text], textarea {
+    background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius-sm); padding: 0.65rem 0.85rem; font-size: 0.9rem; width: 100%;
+    font-family: inherit; transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  input[type=text]:focus, textarea:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  input[type=text]::placeholder, textarea::placeholder { color: var(--text-faint); }
+
+  button.primary, button.secondary, button.danger {
+    font-family: inherit; font-size: 0.87rem; font-weight: 500; cursor: pointer;
+    border-radius: var(--radius-sm); padding: 0.65rem 1.1rem; white-space: nowrap;
+    transition: all 0.15s ease; border: 1px solid transparent;
+  }
+  button.primary {
+    background: var(--accent); color: white; box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+  }
+  button.primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-1px); }
+  button.primary:active:not(:disabled) { transform: translateY(0); }
+  button.primary:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  button.secondary {
+    background: var(--bg-elevated); border-color: var(--border); color: var(--text);
+  }
+  button.secondary:hover { border-color: var(--text-dim); }
+  button.danger {
+    background: var(--danger-soft); border-color: rgba(239,68,68,0.3); color: #fca5a5;
+  }
+  button.danger:hover { background: rgba(239,68,68,0.2); }
+
+  #chatLog, #threadMessages {
+    display: flex; flex-direction: column; gap: 0.7rem; margin-bottom: 1.1rem;
+    min-height: 220px; padding: 0.25rem 0.1rem;
+  }
+  .msg {
+    padding: 0.7rem 1rem; border-radius: var(--radius); max-width: 78%;
+    font-size: 0.91rem; line-height: 1.5; white-space: pre-wrap;
+    animation: slideIn 0.18s ease; box-shadow: var(--shadow);
+  }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .msg.user {
+    background: linear-gradient(135deg, var(--accent), #3d68e0);
+    color: white; align-self: flex-end; border-bottom-right-radius: 4px;
+  }
+  .msg.assistant {
+    background: var(--bg-elevated); border: 1px solid var(--border-soft);
+    align-self: flex-start; border-bottom-left-radius: 4px;
+  }
+  .msg.support {
+    background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.25);
+    align-self: flex-start; border-bottom-left-radius: 4px;
+  }
+  .msg.system {
+    background: transparent; border: 1px dashed var(--border); color: var(--text-dim);
+    align-self: center; font-size: 0.82rem; box-shadow: none; max-width: 90%;
+  }
+
+  .msg.typing { display: flex; gap: 5px; align-items: center; padding: 0.8rem 1rem; }
+  .msg.typing .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); animation: blink 1.2s infinite; }
+  .msg.typing .dot:nth-child(2) { animation-delay: 0.2s; }
+  .msg.typing .dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+
+  .status-banner {
+    background: rgba(245,166,35,0.1); border: 1px solid rgba(245,166,35,0.3); color: var(--amber);
+    padding: 0.7rem 1rem; border-radius: var(--radius-sm); margin-bottom: 1.1rem;
+    font-size: 0.87rem; display: flex; align-items: center; gap: 0.5rem;
+  }
+  .status-banner::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--amber);
+    flex-shrink: 0; animation: pulse 1.6s infinite;
+  }
+  .status-banner.connected {
+    background: rgba(34,197,94,0.1); border-color: rgba(34,197,94,0.3); color: #4ade80;
+  }
+  .status-banner.connected::before { background: var(--green); }
+  @keyframes pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; } 50% { opacity: 0.6; } }
+
+  .queue-item {
+    border: 1px solid var(--border-soft); background: var(--bg-elevated);
+    border-radius: var(--radius); padding: 1.1rem; margin-bottom: 0.85rem;
+    transition: border-color 0.15s ease; box-shadow: var(--shadow);
+  }
+  .queue-item:hover { border-color: var(--border); }
+  .queue-item h3 { margin: 0 0 0.3rem; font-size: 0.95rem; font-weight: 600; }
+  .queue-item p { color: var(--text-dim); font-size: 0.85rem; margin: 0 0 0.85rem; line-height: 1.5; }
+  .empty-state { color: var(--text-faint); text-align: center; padding: 3rem 0; font-size: 0.9rem; }
+  .log-line { font-size: 0.8rem; color: var(--text-dim); margin-top: 0.4rem; min-height: 1.2em; }
+  .section-label {
+    font-size: 0.72rem; color: var(--text-faint); text-transform: uppercase;
+    letter-spacing: 0.08em; margin: 1.5rem 0 0.6rem; font-weight: 600;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🧠 Support Agent — Demo</h1>
+  <span class="badge">demo prototype — see <a href="/docs" style="color:#93c5fd">/docs</a> for the real API</span>
+</header>
+
+<nav>
+  <button id="tabChat" class="active" onclick="showView('chat')">User Chat</button>
+  <button id="tabQueue" onclick="showView('queue')">Support Queue</button>
+</nav>
+
+<main>
+
+  <section id="viewChat" class="view active">
+    <div class="row">
+      <input type="text" id="userIdInput" value="user_001" placeholder="user id" style="max-width:200px">
+      <button class="secondary" onclick="resetChat()">Reset</button>
+    </div>
+
+    <div id="statusBanner" class="status-banner" style="display:none"></div>
+
+    <div id="chatLog"></div>
+
+    <div class="row">
+      <input type="text" id="messageInput" placeholder="Message the support agent..."
+             onkeydown="if(event.key==='Enter') sendMessage()">
+      <button class="primary" id="sendBtn" onclick="sendMessage()">Send</button>
+    </div>
+  </section>
+
+  <section id="viewQueue" class="view">
+
+    <div id="queueListWrap">
+      <div class="row">
+        <button class="primary" onclick="loadQueue()">Refresh queue</button>
+      </div>
+      <div id="queueList"></div>
+    </div>
+
+    <div id="threadDetailWrap" style="display:none">
+      <button class="secondary" onclick="closeThread()">← Back to queue</button>
+      <h3 id="threadDetailTitle" style="margin:1rem 0 0.5rem"></h3>
+
+      <div id="threadMessages"></div>
+
+      <div class="row">
+        <input type="text" id="replyInput" placeholder="Reply to the user (without resolving)..."
+               onkeydown="if(event.key==='Enter') sendReply()">
+        <button class="primary" onclick="sendReply()">Send</button>
+      </div>
+
+      <div class="section-label">Mark resolved</div>
+      <textarea id="resolutionInput" rows="2" placeholder="Final resolution — this reaches the user verbatim and reopens the AI chat..."></textarea>
+      <div class="row" style="margin-top:0.6rem">
+        <button class="danger" onclick="markResolved()">Mark Resolved</button>
+      </div>
+      <div class="log-line" id="threadLogLine"></div>
+    </div>
+
+  </section>
+
+</main>
+
+<script>
+const API_BASE = ""; // same-origin — served by FastAPI itself
+let ws = null;
+let escalated = false;
+let openThreadId = null;
+let pollHandle = null;
+let queuePollHandle = null;
+
+// --- Auth: mints its own tokens client-side, since there's no real login
+// form in this demo (see app/routers/auth.py — POST /auth/token is a
+// stub, no password check). Cached per user_id / agent so repeated
+// actions don't re-fetch a token every time.
+let userTokenCache = { userId: null, token: null };
+let agentTokenCache = null;
+
+async function getUserToken(userId) {
+  if (userTokenCache.userId === userId && userTokenCache.token) {
+    return userTokenCache.token;
+  }
+  const resp = await fetch(`${API_BASE}/auth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, role: 'user' }),
+  });
+  const data = await resp.json();
+  userTokenCache = { userId, token: data.access_token };
+  return data.access_token;
+}
+
+async function getAgentToken() {
+  if (agentTokenCache) return agentTokenCache;
+  const resp = await fetch(`${API_BASE}/auth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: 'demo_support_agent', role: 'support_agent' }),
+  });
+  const data = await resp.json();
+  agentTokenCache = data.access_token;
+  return agentTokenCache;
+}
+
+function showView(name) {
+  document.getElementById('viewChat').classList.toggle('active', name === 'chat');
+  document.getElementById('viewQueue').classList.toggle('active', name === 'queue');
+  document.getElementById('tabChat').classList.toggle('active', name === 'chat');
+  document.getElementById('tabQueue').classList.toggle('active', name === 'queue');
+
+  if (name === 'queue') {
+    closeThread();
+    loadQueue();
+    if (!queuePollHandle) queuePollHandle = setInterval(autoRefreshQueueList, 4000);
+  } else {
+    if (queuePollHandle) { clearInterval(queuePollHandle); queuePollHandle = null; }
+  }
+}
+
+function autoRefreshQueueList() {
+  // Don't yank the agent out of a thread they're actively viewing — that
+  // view already polls itself (loadThreadDetail). Only auto-refresh the
+  // top-level list when it's actually what's on screen.
+  if (openThreadId === null) loadQueue();
+}
+
+function appendMessage(role, text) {
+  const log = document.getElementById('chatLog');
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return div;
+}
+
+function appendTyping() {
+  const log = document.getElementById('chatLog');
+  const div = document.createElement('div');
+  div.className = 'msg assistant typing';
+  div.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return div;
+}
+
+function setBanner(text, cls) {
+  const el = document.getElementById('statusBanner');
+  if (!text) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.className = 'status-banner ' + (cls || '');
+  el.textContent = text;
+}
+
+function currentUserId() {
+  return document.getElementById('userIdInput').value.trim() || 'user_001';
+}
+
+function resetChat() {
+  document.getElementById('chatLog').innerHTML = '';
+  setBanner(null);
+  escalated = false;
+  if (ws) { ws.close(); ws = null; }
+}
+
+async function sendMessage() {
+  const input = document.getElementById('messageInput');
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = '';
+  document.getElementById('sendBtn').disabled = true;
+
+  appendMessage('user', message);
+  const userId = currentUserId();
+
+  const typingEl = escalated ? null : appendTyping();
+
+  try {
+    const token = await getUserToken(userId);
+    const resp = await fetch(`${API_BASE}/chat/${encodeURIComponent(userId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ message }),
+    });
+    const data = await resp.json();
+    if (typingEl) typingEl.remove();
+
+    if (!resp.ok) {
+      appendMessage('system', `Request failed: ${data.detail || resp.status}`);
+    } else if (data.status === 'escalated') {
+      if (!escalated) {
+        escalated = true;
+        setBanner('Escalated to a human agent — waiting for a reply...', 'connecting');
+        connectWebSocket(userId, token);
+      }
+    } else if (data.status === 'blocked') {
+      appendMessage('system', data.message || 'That message was blocked by guardrails.');
+    } else {
+      appendMessage('assistant', data.reply || '');
+    }
+  } catch (err) {
+    if (typingEl) typingEl.remove();
+    appendMessage('system', `Could not reach the API: ${err}`);
+  } finally {
+    document.getElementById('sendBtn').disabled = false;
+  }
+}
+
+function connectWebSocket(userId, token) {
+  if (ws) { ws.close(); }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws/${encodeURIComponent(userId)}?token=${encodeURIComponent(token)}`);
+
+  ws.onopen = () => setBanner("Connected — you're chatting with support now...", 'connected');
+  ws.onerror = () => appendMessage('system', 'Websocket error — replies will still arrive once you check back.');
+  ws.onclose = () => { };
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.status === 'message') {
+      appendMessage('support', data.text);
+    } else if (data.status === 'resolved') {
+      appendMessage('support', data.reply);
+      setBanner(null);
+      escalated = false;
+      ws.close();
+      ws = null;
+    }
+  };
+}
+
+async function loadQueue() {
+  document.getElementById('queueListWrap').style.display = 'block';
+  document.getElementById('threadDetailWrap').style.display = 'none';
+  const list = document.getElementById('queueList');
+  list.innerHTML = '<div class="empty-state">Loading...</div>';
+  try {
+    const token = await getAgentToken();
+    const resp = await fetch(`${API_BASE}/support/pending`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const data = await resp.json();
+    renderQueue(data.pending || []);
+  } catch (err) {
+    list.innerHTML = `<div class="empty-state">Could not reach the API: ${err}</div>`;
+  }
+}
+
+function renderQueue(pending) {
+  const list = document.getElementById('queueList');
+  if (pending.length === 0) {
+    list.innerHTML = '<div class="empty-state">No pending escalations.</div>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const item of pending) {
+    const div = document.createElement('div');
+    div.className = 'queue-item';
+    const count = item.message_count || 0;
+    div.innerHTML = `
+      <h3>Thread: ${item.thread_id}</h3>
+      <p>${item.query || item.message || '(no details provided)'} — ${count} message${count === 1 ? '' : 's'}</p>
+      <button class="primary">Open</button>
+    `;
+    div.querySelector('button').onclick = () => openThread(item.thread_id);
+    list.appendChild(div);
+  }
+}
+
+function openThread(threadId) {
+  openThreadId = threadId;
+  document.getElementById('queueListWrap').style.display = 'none';
+  document.getElementById('threadDetailWrap').style.display = 'block';
+  document.getElementById('threadDetailTitle').textContent = `Thread: ${threadId}`;
+  document.getElementById('threadLogLine').textContent = '';
+  document.getElementById('resolutionInput').value = '';
+
+  loadThreadDetail();
+  if (pollHandle) clearInterval(pollHandle);
+  pollHandle = setInterval(loadThreadDetail, 2500);
+}
+
+function closeThread() {
+  openThreadId = null;
+  if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+  document.getElementById('queueListWrap').style.display = 'block';
+  document.getElementById('threadDetailWrap').style.display = 'none';
+}
+
+async function loadThreadDetail() {
+  if (!openThreadId) return;
+  try {
+    const token = await getAgentToken();
+    const resp = await fetch(`${API_BASE}/support/thread/${encodeURIComponent(openThreadId)}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const data = await resp.json();
+    renderThreadMessages(data.messages || []);
+    if (!data.pending) {
+      closeThread();
+      loadQueue();
+    }
+  } catch (err) {
+    document.getElementById('threadLogLine').textContent = `${err}`;
+  }
+}
+
+function renderThreadMessages(messages) {
+  const log = document.getElementById('threadMessages');
+  log.innerHTML = '';
+  for (const m of messages) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + (m.sender === 'support' ? 'user' : 'assistant');
+    div.textContent = m.text;
+    log.appendChild(div);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+async function sendReply() {
+  const input = document.getElementById('replyInput');
+  const text = input.value.trim();
+  if (!text || !openThreadId) return;
+  input.value = '';
+  try {
+    const token = await getAgentToken();
+    const resp = await fetch(`${API_BASE}/support/thread/${encodeURIComponent(openThreadId)}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ text }),
+    });
+    const data = await resp.json();
+    document.getElementById('threadLogLine').textContent =
+      resp.ok ? `Delivered live: ${data.delivered_to_user}` : `${data.detail}`;
+    loadThreadDetail();
+  } catch (err) {
+    document.getElementById('threadLogLine').textContent = `${err}`;
+  }
+}
+
+async function markResolved() {
+  const resolution = document.getElementById('resolutionInput').value.trim();
+  if (!resolution) {
+    document.getElementById('threadLogLine').textContent = 'Enter a resolution first.';
+    return;
+  }
+  await submitResolution(resolution, false);
+}
+
+async function submitResolution(resolution, confirmed) {
+  try {
+    const token = await getAgentToken();
+    const resp = await fetch(`${API_BASE}/support/resolve/${encodeURIComponent(openThreadId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ resolution, confirmed }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      document.getElementById('threadLogLine').textContent = `${data.detail}`;
+      return;
+    }
+    if (data.status === 'confirmation_required') {
+      // This resolution looked money-related (refund, credit, currency
+      // amount) — the backend enforces this too, not just this dialog,
+      // so re-submitting straight to the API without going through here
+      // wouldn't skip it either.
+      const proceed = confirm(
+        `${data.message}\n\nResolution: "${resolution}"\n\nConfirm to finalize this refund/credit and send it to the user?`
+      );
+      if (proceed) {
+        await submitResolution(resolution, true);
+      } else {
+        document.getElementById('threadLogLine').textContent = 'Not sent — edit the resolution or confirm to proceed.';
+      }
+      return;
+    }
+    closeThread();
+    loadQueue();
+  } catch (err) {
+    document.getElementById('threadLogLine').textContent = `${err}`;
+  }
+}
+</script>
+</body>
+</html>

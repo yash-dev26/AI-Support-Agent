@@ -8,10 +8,13 @@ venv/
 .pytest_cache/
 
 # local mock commerce db
-app/commerce.db
+app/data/commerce.db
+
+# local Qdrant embedded-mode data (rebuilt from app/data/docs/ on every startup)
+app/data/qdrant/
 
 # uploaded docs at runtime (keep the seed one tracked, ignore ad-hoc uploads)
-app/docs/*
-!app/docs/refund_policy.md
+app/data/docs/*
+!app/data/docs/refund_policy.md
 
 .DS_Store
