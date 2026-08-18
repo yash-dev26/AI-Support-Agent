@@ -53,3 +53,5 @@ def get_distinct_thread_ids() -> list[str]:
     the correct set to scan, and it doesn't require pre-seeding anything.
     """
     return _messages_col().distinct("thread_id")
+
+

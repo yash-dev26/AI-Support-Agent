@@ -38,3 +38,5 @@ def metrics():
         "total_escalations": escalated,
         "total_human_resolutions": len(resolved_by_human),
     }
+
+

@@ -36,8 +36,8 @@ POST /chat/{user_id}   [Bearer token required, rate limited: 15/min per user]
    Guardrails input check (NeMo Guardrails) ──► blocked? return refusal,
         │                                        never reaches the agent
         ▼ (allowed)
-   LangGraph agent ── tool call ──► get_cart / get_order_history /
-        │                            get_order_status / check_policy
+   LangGraph agent ── tool call ──► get_user_cart / get_order_history / get_latest_order /
+        │                            get_order_by_id / check_policy
         │                            (FAQ match → RAG w/ citations →
         │                             NO_ANSWER_FOUND signal)
         │
@@ -77,12 +77,14 @@ status. That doesn't hold up as "infra." This version:
 * Adds a **concurrency test** that fires multiple simultaneous escalations and verifies no cross-thread state corruption
 * Adds a **live escalation side-channel**: once escalated, the user talks ONLY to the human — a real back-and-forth (`GET`/`POST /support/thread/{id}`), not a single request/response
 * Adds a **real intent router** for `check_policy`: FAQ keyword match → RAG over a local Qdrant (embedded mode) store with citations → an explicit `NO_ANSWER_FOUND` signal
-* Makes **escalation a genuine last resort**: the system prompt gates `human_interrupt_tool` on `check_policy` returning `NO_ANSWER_FOUND`, not on the user simply asking for a human
+* Makes **escalation a genuine last resort**: the system prompt gates `create_support_ticket` on `check_policy` returning `NO_ANSWER_FOUND`, not on the user simply asking for a human
 * Adds a **typing indicator** and a **demo frontend** (`frontend/`) with a real auto-connecting websocket, no manual steps
 * Adds **rate limiting** (`slowapi`, per-user) on every state-changing endpoint that costs money or write access
 * Adds **input guardrails** (NeMo Guardrails) — prompt injection and off-topic messages are blocked before they ever reach the agent
 * Adds a **money-confirmation gate** on resolving a thread — a refund/credit/currency-amount resolution requires an explicit second confirmation, enforced server-side, before it actually reaches the user
 * Adds **JWT auth** — every protected endpoint requires a token, `user` tokens only act as their own `user_id`, `support_agent` tokens are required for every `/support/*` endpoint, verified with real 401/403 tests, not just added and assumed
+* Adds a **live user context sidebar** and **agent tool-execution badges** to the demo frontend, and a formal **ticket system** (`create_support_ticket`, `/support/tickets`) with a replay-safe ticket id — see [`CHANGES.md`](CHANGES.md) for the story of the replay bug this caught
+* Adds **structured, tagged logging** (`app/core/agent_logging.py`) — every app-level log line carries a `[AGENT]` / `[TOOL CALL]` / `[GUARDRAIL STATUS]` / `[RESPONSE]` tag with a timestamp and thread id, and third-party framework logging (NeMo Guardrails, LangChain, LangGraph, pymongo, httpx...) is turned down to WARNING so it doesn't drown out what the agent is actually doing. Distinct from `log_event()`, which writes structured events to Mongo for the `/metrics` endpoint — this is for a human reading stdout/`docker logs`, not for querying later.
 
 ---
 
@@ -406,3 +408,5 @@ on every state-changing endpoint, NeMo Guardrails input checks for prompt
 injection and off-topic messages, a server-enforced confirmation gate on
 money-related resolutions, and JWT auth with real role-based enforcement
 (`user` vs `support_agent`).
+
+

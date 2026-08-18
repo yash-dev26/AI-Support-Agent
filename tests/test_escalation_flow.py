@@ -98,7 +98,7 @@ def client():
 def test_normal_message_goes_to_the_llm_path(client):
     resp = client.post("/chat/user_001", json={"message": "hi there"}, headers=user_headers("user_001"))
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "reply": "echo: hi there"}
+    assert resp.json() == {"status": "ok", "reply": "echo: hi there", "tool_calls": []}
 
 
 def test_chat_rejects_missing_token(client):
@@ -199,7 +199,7 @@ def test_resolve_delivers_verbatim_and_reopens_llm_path(client):
 
     # user can talk to the LLM again after resolution
     resp2 = client.post("/chat/user_001", json={"message": "thanks, one more question"}, headers=user_headers("user_001"))
-    assert resp2.json() == {"status": "ok", "reply": "echo: thanks, one more question"}
+    assert resp2.json() == {"status": "ok", "reply": "echo: thanks, one more question", "tool_calls": []}
 
 
 def test_money_related_resolution_requires_confirmation(client):
@@ -250,3 +250,5 @@ def test_non_money_resolution_does_not_require_confirmation(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "resumed"  # no confirmation needed, resolved immediately
+
+

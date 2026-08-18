@@ -79,3 +79,5 @@ def test_index_all_docs_indexes_every_txt_and_md_file(tmp_path, monkeypatch):
 
     total = vector_store.index_all_docs()
     assert total == 2  # one paragraph each from a.md and b.txt, json ignored
+
+

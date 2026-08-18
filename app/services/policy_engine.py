@@ -17,7 +17,7 @@ from app.services import faq, vector_store
 
 NO_ANSWER_SIGNAL = (
     "NO_ANSWER_FOUND: No FAQ or documented policy addresses this question. "
-    "Escalate to a human now via human_interrupt_tool."
+    "Escalate to a human now via create_support_ticket."
 )
 
 _SCORE_FLOOR = 0.35  # below this, treat retrieval as "found nothing relevant" —
@@ -34,7 +34,7 @@ def answer(query: str) -> str:
     except Exception as e:
         return (
             f"NO_ANSWER_FOUND: retrieval unavailable ({e}). "
-            "Escalate to a human now via human_interrupt_tool."
+            "Escalate to a human now via create_support_ticket."
         )
 
     relevant = [h for h in hits if h["score"] >= _SCORE_FLOOR]
@@ -63,3 +63,5 @@ def _generate_cited_answer(query: str, hits: list[dict]) -> str:
     if "NO_ANSWER_FOUND" in text:
         return NO_ANSWER_SIGNAL
     return f"[RAG] {text}"
+
+

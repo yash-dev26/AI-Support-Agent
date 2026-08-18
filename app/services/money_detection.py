@@ -31,3 +31,5 @@ def looks_money_related(text: str) -> bool:
         return True
     lowered = text.lower()
     return any(keyword in lowered for keyword in _MONEY_KEYWORDS)
+
+

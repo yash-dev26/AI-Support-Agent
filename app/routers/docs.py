@@ -48,3 +48,5 @@ async def upload_doc(request: Request, file: UploadFile = File(...), current: To
         chunks_indexed = 0
 
     return {"status": "uploaded", "filename": file.filename, "chunks_indexed": chunks_indexed}
+
+

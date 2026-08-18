@@ -5,22 +5,40 @@ to know about model config to wire nodes together.
 """
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import SystemMessage
+from langchain_core.runnables import RunnableConfig
 
+from app.core.agent_logging import get_logger, log_agent
 from app.graph.state import State
 from app.graph.tools import TOOLS
 
+logger = get_logger("nodes")
+
 SYSTEM_PROMPT = (
-    "You are a customer support agent. You have tools to look up a user's cart, "
-    "order history, and order status, and check_policy to check company FAQ and "
-    "documentation (it tries a fast FAQ match first, then a cited retrieval search).\n\n"
+    "You are a customer support agent. You have tools to look up a user's cart "
+    "(get_user_cart), full order history (get_order_history), their single most "
+    "recent order (get_latest_order), a specific order by id (get_order_by_id), "
+    "and check_policy to check company FAQ and documentation (it tries a fast FAQ "
+    "match first, then a cited retrieval search).\n\n"
+    "Resolve implicit context yourself instead of asking the user to repeat "
+    "information you can look up. If they refer to \"my order\", \"my latest "
+    "order\", or describe an issue without giving an order_id, call "
+    "get_latest_order first — don't ask them which order they mean unless "
+    "get_latest_order comes back empty or they clearly have multiple orders in "
+    "play (e.g. they mention two different products). Only use get_order_by_id "
+    "when the user has given you a specific order_id, or get_order_history when "
+    "they're asking about their orders broadly (e.g. \"what have I ordered "
+    "recently\") rather than one specific order.\n\n"
     "Escalation is a LAST RESORT, not a default. A user asking to talk to a human, "
     "by itself, is NOT a reason to escalate — always make a real attempt first: "
     "look up relevant data with your tools, and call check_policy before assuming "
-    "you can't help. Only call human_interrupt_tool once check_policy's result "
+    "you can't help. Only call create_support_ticket once check_policy's result "
     "starts with \"NO_ANSWER_FOUND\", or the issue genuinely requires manual action "
     "no tool covers (e.g. a policy document explicitly says a case needs human "
     "review). If check_policy returns an answer, use it to actually resolve the "
-    "user's issue instead of escalating anyway."
+    "user's issue instead of escalating anyway. When you do call "
+    "create_support_ticket, give it a short issue_type category and a details "
+    "summary that includes what you've already learned from your other tool "
+    "calls, so the human agent doesn't start cold."
 )
 
 # Constructed lazily, on first actual use, rather than at import time.
@@ -41,7 +59,8 @@ def _get_llm_with_tools():
     return _llm_with_tools
 
 
-def chatbot(state: State):
+def chatbot(state: State, config: RunnableConfig):
+    thread_id = config.get("configurable", {}).get("user_id", "unknown")
     messages = state["messages"]
     # `add_messages` coerces incoming dicts into LangChain message objects
     # (HumanMessage, AIMessage, ...) as soon as they land in state, so we
@@ -50,5 +69,13 @@ def chatbot(state: State):
     # type instead.
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=SYSTEM_PROMPT)] + list(messages)
+    log_agent(logger, thread_id, f"invoking LLM with {len(messages)} messages in context")
     response = _get_llm_with_tools().invoke(messages)
+    if getattr(response, "tool_calls", None):
+        tool_names = ", ".join(tc["name"] for tc in response.tool_calls)
+        log_agent(logger, thread_id, f"model requested tool call(s): {tool_names}")
+    else:
+        log_agent(logger, thread_id, "model produced a direct reply, no tool calls")
     return {"messages": [response]}
+
+

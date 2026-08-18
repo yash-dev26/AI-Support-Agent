@@ -22,10 +22,11 @@ from app.services import mock_db
 from app.services import vector_store
 from app.core import deps
 from app.core.rate_limit import limiter
-from app.routers import chat, support, metrics, docs, health, auth
+from app.core.agent_logging import configure_logging, get_logger
+from app.routers import chat, support, metrics, docs, health, auth, users
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 
 MONGODB_URI = os.getenv("MONGODB_URI")
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
@@ -73,6 +74,7 @@ app.add_middleware(SlowAPIMiddleware)
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(support.router)
+app.include_router(users.router)
 app.include_router(metrics.router)
 app.include_router(docs.router)
 app.include_router(health.router)
@@ -95,3 +97,5 @@ def root():
                 "push (auto-connecting websocket, no manual steps) is also "
                 "available at /ui/.",
     }
+
+

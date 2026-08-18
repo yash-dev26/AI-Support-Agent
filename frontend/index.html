@@ -2,27 +2,38 @@
 <!--
   Demo prototype only — NOT a production frontend. The real interface is
   the API itself (see /docs). This exists to show the human-in-the-loop
-  flow working end to end, with genuine real-time push.
+  flow working end to end, with genuine real-time push, plus enough
+  visibility into the agent's tool calls and the user's live commerce
+  context to make a demo recording actually legible.
 
   Once a thread escalates, the user's messages stop reaching the LLM
   entirely — the backend routes them into a side-channel the support
-  agent can see and reply to directly (see app/escalation_store.py). This
-  page reflects that: the chat input stays live during escalation, but
+  agent can see and reply to directly (see app/services/escalation_store.py).
+  This page reflects that: the chat input stays live during escalation, but
   every message just gets relayed to the human until they click "Mark
   Resolved," at which point the LLM path reopens automatically.
+
+  The tool-call badges under each turn are NOT a real streaming trace —
+  /chat/{user_id} is a single request/response call, so by the time the
+  browser has the tool_calls list, the run already finished. The badges
+  are staged with a short animated delay purely so a viewer watching a
+  screen recording can actually see what the agent did, instead of a
+  blank pause followed by a reply appearing out of nowhere.
 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Support Agent — Demo</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
     color-scheme: dark;
     --bg: #0b0b0f;
     --bg-elevated: #16161c;
+    --bg-sunken: #101014;
     --border: #26262f;
     --border-soft: #1d1d24;
     --text: #e8e8ec;
@@ -32,12 +43,17 @@
     --accent-hover: #6690ff;
     --accent-soft: rgba(79, 127, 255, 0.12);
     --green: #22c55e;
+    --green-soft: rgba(34,197,94,0.12);
     --amber: #f5a623;
+    --amber-soft: rgba(245,166,35,0.12);
+    --violet: #a78bfa;
+    --violet-soft: rgba(167,139,250,0.12);
     --danger: #ef4444;
     --danger-soft: rgba(239, 68, 68, 0.12);
     --radius: 12px;
     --radius-sm: 8px;
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.25);
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
   }
   * { box-sizing: border-box; }
   body {
@@ -81,24 +97,30 @@
     box-shadow: 0 2px 8px rgba(79,127,255,0.35);
   }
 
-  main { padding: 2rem 1.75rem; max-width: 720px; margin: 0 auto; }
+  main { padding: 2rem 1.75rem; max-width: 1120px; margin: 0 auto; }
   .view { display: none; }
   .view.active { display: block; animation: fadeIn 0.2s ease; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
+  /* --- Chat + sidebar layout --- */
+  .chat-layout { display: grid; grid-template-columns: 1fr 320px; gap: 1.5rem; align-items: start; }
+  @media (max-width: 860px) { .chat-layout { grid-template-columns: 1fr; } }
+  .chat-panel { min-width: 0; }
+
   .row { display: flex; gap: 0.6rem; margin-bottom: 1.1rem; }
-  input[type=text], textarea {
+  input[type=text], textarea, select {
     background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text);
     border-radius: var(--radius-sm); padding: 0.65rem 0.85rem; font-size: 0.9rem; width: 100%;
     font-family: inherit; transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
-  input[type=text]:focus, textarea:focus {
+  select { cursor: pointer; }
+  input[type=text]:focus, textarea:focus, select:focus {
     outline: none; border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-soft);
   }
   input[type=text]::placeholder, textarea::placeholder { color: var(--text-faint); }
 
-  button.primary, button.secondary, button.danger {
+  button.primary, button.secondary, button.danger, button.ghost {
     font-family: inherit; font-size: 0.87rem; font-weight: 500; cursor: pointer;
     border-radius: var(--radius-sm); padding: 0.65rem 1.1rem; white-space: nowrap;
     transition: all 0.15s ease; border: 1px solid transparent;
@@ -117,13 +139,18 @@
     background: var(--danger-soft); border-color: rgba(239,68,68,0.3); color: #fca5a5;
   }
   button.danger:hover { background: rgba(239,68,68,0.2); }
+  button.ghost {
+    background: none; border-color: transparent; color: var(--text-dim); padding: 0.35rem 0.6rem;
+    font-size: 0.78rem;
+  }
+  button.ghost:hover { color: var(--text); background: var(--bg-elevated); }
 
   #chatLog, #threadMessages {
     display: flex; flex-direction: column; gap: 0.7rem; margin-bottom: 1.1rem;
     min-height: 220px; padding: 0.25rem 0.1rem;
   }
   .msg {
-    padding: 0.7rem 1rem; border-radius: var(--radius); max-width: 78%;
+    padding: 0.7rem 1rem; border-radius: var(--radius); max-width: 82%;
     font-size: 0.91rem; line-height: 1.5; white-space: pre-wrap;
     animation: slideIn 0.18s ease; box-shadow: var(--shadow);
   }
@@ -151,6 +178,29 @@
   .msg.typing .dot:nth-child(3) { animation-delay: 0.4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
 
+  /* --- Agent tool-execution badges --- */
+  .tool-badge {
+    align-self: flex-start; display: flex; align-items: center; gap: 0.5rem;
+    font-family: var(--mono); font-size: 0.78rem; color: var(--text-dim);
+    background: var(--bg-sunken); border: 1px solid var(--border-soft);
+    border-radius: 999px; padding: 0.4rem 0.85rem 0.4rem 0.6rem;
+    animation: slideIn 0.18s ease; transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+  }
+  .tool-badge .dot3 { display: inline-flex; gap: 3px; }
+  .tool-badge .dot3 span {
+    width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+    animation: blink 1s infinite;
+  }
+  .tool-badge .dot3 span:nth-child(2) { animation-delay: 0.15s; }
+  .tool-badge .dot3 span:nth-child(3) { animation-delay: 0.3s; }
+  .tool-badge .icon { font-size: 0.85rem; line-height: 1; }
+  .tool-badge.done {
+    background: var(--green-soft); border-color: rgba(34,197,94,0.3); color: #86efac;
+  }
+  .tool-badge.escalated {
+    background: var(--violet-soft); border-color: rgba(167,139,250,0.35); color: var(--violet);
+  }
+
   .status-banner {
     background: rgba(245,166,35,0.1); border: 1px solid rgba(245,166,35,0.3); color: var(--amber);
     padding: 0.7rem 1rem; border-radius: var(--radius-sm); margin-bottom: 1.1rem;
@@ -166,14 +216,80 @@
   .status-banner.connected::before { background: var(--green); }
   @keyframes pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; } 50% { opacity: 0.6; } }
 
+  /* --- Sidebar --- */
+  .sidebar { display: flex; flex-direction: column; gap: 1rem; position: sticky; top: 5.5rem; }
+  .sidebar-card {
+    border: 1px solid var(--border-soft); background: var(--bg-elevated);
+    border-radius: var(--radius); padding: 1rem 1.1rem; box-shadow: var(--shadow);
+  }
+  .sidebar-card h4 {
+    margin: 0 0 0.75rem; font-size: 0.72rem; color: var(--text-faint);
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .profile-head { display: flex; align-items: center; gap: 0.7rem; }
+  .avatar {
+    width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--accent), #8a5cf6);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 600; font-size: 0.85rem; color: white;
+  }
+  .profile-name { font-size: 0.92rem; font-weight: 600; }
+  .profile-meta { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.1rem; }
+  .profile-id { font-family: var(--mono); font-size: 0.72rem; color: var(--text-faint); margin-top: 0.3rem; }
+
+  .order-row {
+    padding: 0.55rem 0; border-top: 1px solid var(--border-soft); cursor: pointer;
+  }
+  .order-row:first-of-type { border-top: none; }
+  .order-row-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  .order-product { font-size: 0.83rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .order-amount { font-size: 0.8rem; color: var(--text-dim); font-family: var(--mono); flex-shrink: 0; }
+  .order-detail {
+    max-height: 0; overflow: hidden; transition: max-height 0.2s ease, margin-top 0.2s ease;
+    font-size: 0.76rem; color: var(--text-dim); font-family: var(--mono);
+  }
+  .order-row.expanded .order-detail { max-height: 60px; margin-top: 0.4rem; }
+
+  .status-pill {
+    font-size: 0.68rem; font-weight: 600; padding: 0.15rem 0.55rem; border-radius: 999px;
+    text-transform: capitalize; flex-shrink: 0;
+  }
+  .status-pill.delivered { background: var(--green-soft); color: #86efac; }
+  .status-pill.shipped { background: var(--accent-soft); color: #a5c0ff; }
+  .status-pill.processing { background: var(--amber-soft); color: #fbd38d; }
+  .status-pill.cancelled { background: rgba(255,255,255,0.06); color: var(--text-faint); }
+  .status-pill.refunded { background: var(--violet-soft); color: var(--violet); }
+
+  .cart-row { display: flex; justify-content: space-between; font-size: 0.83rem; padding: 0.3rem 0; }
+  .cart-row .name { color: var(--text); }
+  .cart-row .qty { color: var(--text-faint); font-size: 0.76rem; }
+  .cart-total {
+    display: flex; justify-content: space-between; font-size: 0.85rem; font-weight: 600;
+    border-top: 1px solid var(--border-soft); margin-top: 0.5rem; padding-top: 0.5rem;
+  }
+  .sidebar-empty { font-size: 0.8rem; color: var(--text-faint); padding: 0.4rem 0; }
+  .sidebar-skeleton { height: 0.8rem; border-radius: 4px; background: var(--bg-sunken); margin: 0.4rem 0; animation: shimmer 1.3s infinite ease-in-out; }
+  @keyframes shimmer { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+  /* --- Queue --- */
   .queue-item {
     border: 1px solid var(--border-soft); background: var(--bg-elevated);
     border-radius: var(--radius); padding: 1.1rem; margin-bottom: 0.85rem;
     transition: border-color 0.15s ease; box-shadow: var(--shadow);
   }
   .queue-item:hover { border-color: var(--border); }
-  .queue-item h3 { margin: 0 0 0.3rem; font-size: 0.95rem; font-weight: 600; }
+  .queue-item-top { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; margin-bottom: 0.3rem; }
+  .queue-item h3 { margin: 0; font-size: 0.95rem; font-weight: 600; }
   .queue-item p { color: var(--text-dim); font-size: 0.85rem; margin: 0 0 0.85rem; line-height: 1.5; }
+  .queue-tags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+  .tag {
+    font-size: 0.68rem; font-weight: 600; padding: 0.15rem 0.55rem; border-radius: 999px;
+    background: var(--bg-sunken); border: 1px solid var(--border-soft); color: var(--text-dim);
+  }
+  .tag.priority-high { background: var(--danger-soft); color: #fca5a5; border-color: rgba(239,68,68,0.3); }
+  .tag.ticket-id { font-family: var(--mono); }
+
   .empty-state { color: var(--text-faint); text-align: center; padding: 3rem 0; font-size: 0.9rem; }
   .log-line { font-size: 0.8rem; color: var(--text-dim); margin-top: 0.4rem; min-height: 1.2em; }
   .section-label {
@@ -197,19 +313,46 @@
 <main>
 
   <section id="viewChat" class="view active">
-    <div class="row">
-      <input type="text" id="userIdInput" value="user_001" placeholder="user id" style="max-width:200px">
-      <button class="secondary" onclick="resetChat()">Reset</button>
-    </div>
+    <div class="chat-layout">
 
-    <div id="statusBanner" class="status-banner" style="display:none"></div>
+      <div class="chat-panel">
+        <div class="row">
+          <select id="userIdSelect" style="max-width:180px" onchange="onUserPicked()">
+            <option value="">Loading users…</option>
+          </select>
+          <input type="text" id="userIdInput" value="user_001" placeholder="or type a user id"
+                 onkeydown="if(event.key==='Enter') onUserPicked()">
+          <button class="secondary" onclick="resetChat()">Reset</button>
+        </div>
 
-    <div id="chatLog"></div>
+        <div id="statusBanner" class="status-banner" style="display:none"></div>
 
-    <div class="row">
-      <input type="text" id="messageInput" placeholder="Message the support agent..."
-             onkeydown="if(event.key==='Enter') sendMessage()">
-      <button class="primary" id="sendBtn" onclick="sendMessage()">Send</button>
+        <div id="chatLog"></div>
+
+        <div class="row">
+          <input type="text" id="messageInput" placeholder="Message the support agent..."
+                 onkeydown="if(event.key==='Enter') sendMessage()">
+          <button class="primary" id="sendBtn" onclick="sendMessage()">Send</button>
+        </div>
+      </div>
+
+      <aside class="sidebar">
+        <div class="sidebar-card" id="profileCard">
+          <h4>Profile</h4>
+          <div class="sidebar-skeleton" style="width:70%"></div>
+          <div class="sidebar-skeleton" style="width:50%"></div>
+        </div>
+        <div class="sidebar-card" id="ordersCard">
+          <h4>Recent orders <button class="ghost" onclick="refreshSidebar()">↻</button></h4>
+          <div class="sidebar-skeleton" style="width:90%"></div>
+          <div class="sidebar-skeleton" style="width:80%"></div>
+        </div>
+        <div class="sidebar-card" id="cartCard">
+          <h4>Cart</h4>
+          <div class="sidebar-skeleton" style="width:60%"></div>
+        </div>
+      </aside>
+
     </div>
   </section>
 
@@ -225,6 +368,7 @@
     <div id="threadDetailWrap" style="display:none">
       <button class="secondary" onclick="closeThread()">← Back to queue</button>
       <h3 id="threadDetailTitle" style="margin:1rem 0 0.5rem"></h3>
+      <div id="threadTicketInfo" class="queue-tags"></div>
 
       <div id="threadMessages"></div>
 
@@ -253,6 +397,7 @@ let escalated = false;
 let openThreadId = null;
 let pollHandle = null;
 let queuePollHandle = null;
+let sidebarUserId = null;
 
 // --- Auth: mints its own tokens client-side, since there's no real login
 // form in this demo (see app/routers/auth.py — POST /auth/token is a
@@ -337,8 +482,70 @@ function setBanner(text, cls) {
   el.textContent = text;
 }
 
+// --- Tool-execution badges -------------------------------------------
+// Friendly label per tool so the demo reads naturally instead of showing
+// raw Python function names. See app/graph/tools.py for what each one
+// actually does.
+const TOOL_LABELS = {
+  get_user_cart: 'Checking your cart',
+  get_order_history: 'Looking up order history',
+  get_latest_order: 'Checking your latest order',
+  get_order_by_id: 'Looking up that order',
+  check_policy: 'Checking policy & FAQ',
+  create_support_ticket: 'Opening a support ticket',
+};
+
+function friendlyToolLabel(name) {
+  return TOOL_LABELS[name] || name;
+}
+
+// Renders each tool call as a badge that starts in a "calling" state and
+// flips to "done"/"escalated" a beat later — see the file-level comment
+// at the top for why this is staged rather than truly live. Returns a
+// promise that resolves once every badge has settled, so the caller can
+// wait before revealing the final reply.
+function renderToolBadges(toolCalls) {
+  return new Promise((resolve) => {
+    if (!toolCalls || toolCalls.length === 0) { resolve(); return; }
+    const log = document.getElementById('chatLog');
+    let i = 0;
+    const STEP_MS = 550;
+
+    function next() {
+      if (i >= toolCalls.length) { resolve(); return; }
+      const call = toolCalls[i];
+      const div = document.createElement('div');
+      div.className = 'tool-badge';
+      div.innerHTML = `<span class="dot3"><span></span><span></span><span></span></span>` +
+                       `Calling <strong>${friendlyToolLabel(call.tool)}</strong>…`;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+
+      setTimeout(() => {
+        if (call.status === 'escalated') {
+          div.className = 'tool-badge escalated';
+          div.innerHTML = `<span class="icon">🎫</span> ${friendlyToolLabel(call.tool)} — escalated to a human`;
+        } else {
+          div.className = 'tool-badge done';
+          div.innerHTML = `<span class="icon">✓</span> ${friendlyToolLabel(call.tool)} — data retrieved`;
+        }
+        i += 1;
+        setTimeout(next, STEP_MS * 0.4);
+      }, STEP_MS);
+    }
+    next();
+  });
+}
+
 function currentUserId() {
   return document.getElementById('userIdInput').value.trim() || 'user_001';
+}
+
+function onUserPicked() {
+  const select = document.getElementById('userIdSelect');
+  if (select.value) document.getElementById('userIdInput').value = select.value;
+  resetChat();
+  refreshSidebar();
 }
 
 function resetChat() {
@@ -346,6 +553,135 @@ function resetChat() {
   setBanner(null);
   escalated = false;
   if (ws) { ws.close(); ws = null; }
+}
+
+async function populateUserPicker() {
+  const select = document.getElementById('userIdSelect');
+  try {
+    const token = await getAgentToken();
+    const resp = await fetch(`${API_BASE}/users`, { headers: { 'Authorization': `Bearer ${token}` } });
+    const data = await resp.json();
+    select.innerHTML = '<option value="">— pick a seeded user —</option>' +
+      (data.user_ids || []).map(id => `<option value="${id}">${id}</option>`).join('');
+  } catch (err) {
+    select.innerHTML = '<option value="">(could not load users)</option>';
+  }
+}
+
+// --- Live user context sidebar ----------------------------------------
+function formatMoney(cents) {
+  return '₹' + (cents / 100).toFixed(2);
+}
+
+function initials(name) {
+  return (name || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+}
+
+function skeleton(card, lines) {
+  card.innerHTML = Array.from({ length: lines }).map((_, i) =>
+    `<div class="sidebar-skeleton" style="width:${90 - i * 15}%"></div>`
+  ).join('');
+}
+
+async function refreshSidebar() {
+  const userId = currentUserId();
+  sidebarUserId = userId;
+  const profileCard = document.getElementById('profileCard');
+  const ordersCard = document.getElementById('ordersCard');
+  const cartCard = document.getElementById('cartCard');
+
+  profileCard.innerHTML = '<h4>Profile</h4>';
+  ordersCard.innerHTML = '<h4>Recent orders <button class="ghost" onclick="refreshSidebar()">↻</button></h4>';
+  cartCard.innerHTML = '<h4>Cart</h4>';
+  const profileBody = document.createElement('div');
+  const ordersBody = document.createElement('div');
+  const cartBody = document.createElement('div');
+  profileCard.appendChild(profileBody);
+  ordersCard.appendChild(ordersBody);
+  cartCard.appendChild(cartBody);
+  skeleton(profileBody, 2);
+  skeleton(ordersBody, 3);
+  skeleton(cartBody, 2);
+
+  try {
+    const token = await getUserToken(userId);
+    const resp = await fetch(`${API_BASE}/users/${encodeURIComponent(userId)}/context`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (sidebarUserId !== userId) return; // user changed again before this resolved
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      const msg = resp.status === 404
+        ? `No seeded profile for "${userId}" — chat still works, just no commerce data to show.`
+        : (data.detail || 'Could not load user context.');
+      profileBody.innerHTML = `<div class="sidebar-empty">${msg}</div>`;
+      ordersBody.innerHTML = '';
+      cartBody.innerHTML = '';
+      return;
+    }
+    const data = await resp.json();
+    renderProfile(profileBody, data.profile);
+    renderOrders(ordersBody, data.orders);
+    renderCart(cartBody, data.cart);
+  } catch (err) {
+    profileBody.innerHTML = `<div class="sidebar-empty">Could not reach the API: ${err}</div>`;
+    ordersBody.innerHTML = '';
+    cartBody.innerHTML = '';
+  }
+}
+
+function renderProfile(el, profile) {
+  el.innerHTML = `
+    <div class="profile-head">
+      <div class="avatar">${initials(profile.name)}</div>
+      <div>
+        <div class="profile-name">${profile.name}</div>
+        <div class="profile-meta">${profile.email}</div>
+      </div>
+    </div>
+    <div class="profile-id">${profile.user_id}</div>
+  `;
+}
+
+function renderOrders(el, orders) {
+  if (!orders || orders.length === 0) {
+    el.innerHTML = '<div class="sidebar-empty">No orders yet.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  for (const o of orders) {
+    const row = document.createElement('div');
+    row.className = 'order-row';
+    const tracking = o.tracking_number
+      ? `${o.carrier} · ${o.tracking_number}`
+      : 'Not shipped yet';
+    row.innerHTML = `
+      <div class="order-row-top">
+        <span class="order-product" title="${o.product_name}">${o.product_name}</span>
+        <span class="status-pill ${o.status}">${o.status}</span>
+      </div>
+      <div class="order-row-top" style="margin-top:0.2rem">
+        <span class="profile-id" style="margin:0">${o.order_id}</span>
+        <span class="order-amount">${formatMoney(o.amount_cents)}</span>
+      </div>
+      <div class="order-detail">${tracking} · placed ${o.placed_at}</div>
+    `;
+    row.onclick = () => row.classList.toggle('expanded');
+    el.appendChild(row);
+  }
+}
+
+function renderCart(el, cart) {
+  if (!cart || !cart.items || cart.items.length === 0) {
+    el.innerHTML = '<div class="sidebar-empty">Cart is empty.</div>';
+    return;
+  }
+  el.innerHTML = cart.items.map(i => `
+    <div class="cart-row">
+      <span class="name">${i.product_name} <span class="qty">×${i.quantity}</span></span>
+      <span>${formatMoney(i.amount_cents * i.quantity)}</span>
+    </div>
+  `).join('') + `<div class="cart-total"><span>Total</span><span>${formatMoney(cart.total_cents)}</span></div>`;
 }
 
 async function sendMessage() {
@@ -373,14 +709,17 @@ async function sendMessage() {
     if (!resp.ok) {
       appendMessage('system', `Request failed: ${data.detail || resp.status}`);
     } else if (data.status === 'escalated') {
+      await renderToolBadges(data.tool_calls);
       if (!escalated) {
         escalated = true;
-        setBanner('Escalated to a human agent — waiting for a reply...', 'connecting');
+        const ticketNote = data.ticket_id ? ` (ticket ${data.ticket_id})` : '';
+        setBanner(`Escalated to a human agent${ticketNote} — waiting for a reply...`, 'connecting');
         connectWebSocket(userId, token);
       }
     } else if (data.status === 'blocked') {
       appendMessage('system', data.message || 'That message was blocked by guardrails.');
     } else {
+      await renderToolBadges(data.tool_calls);
       appendMessage('assistant', data.reply || '');
     }
   } catch (err) {
@@ -441,8 +780,16 @@ function renderQueue(pending) {
     const div = document.createElement('div');
     div.className = 'queue-item';
     const count = item.message_count || 0;
+    const ticket = item.ticket;
+    const tags = [];
+    if (item.issue_type) tags.push(`<span class="tag">${item.issue_type}</span>`);
+    if (ticket) {
+      tags.push(`<span class="tag priority-${ticket.priority}">${ticket.priority} priority</span>`);
+      tags.push(`<span class="tag ticket-id">${ticket.ticket_id}</span>`);
+    }
     div.innerHTML = `
-      <h3>Thread: ${item.thread_id}</h3>
+      <div class="queue-item-top"><h3>Thread: ${item.thread_id}</h3></div>
+      ${tags.length ? `<div class="queue-tags">${tags.join('')}</div>` : ''}
       <p>${item.query || item.message || '(no details provided)'} — ${count} message${count === 1 ? '' : 's'}</p>
       <button class="primary">Open</button>
     `;
@@ -456,6 +803,7 @@ function openThread(threadId) {
   document.getElementById('queueListWrap').style.display = 'none';
   document.getElementById('threadDetailWrap').style.display = 'block';
   document.getElementById('threadDetailTitle').textContent = `Thread: ${threadId}`;
+  document.getElementById('threadTicketInfo').innerHTML = '';
   document.getElementById('threadLogLine').textContent = '';
   document.getElementById('resolutionInput').value = '';
 
@@ -480,6 +828,7 @@ async function loadThreadDetail() {
     });
     const data = await resp.json();
     renderThreadMessages(data.messages || []);
+    renderThreadTicketInfo(data.ticket);
     if (!data.pending) {
       closeThread();
       loadQueue();
@@ -487,6 +836,17 @@ async function loadThreadDetail() {
   } catch (err) {
     document.getElementById('threadLogLine').textContent = `${err}`;
   }
+}
+
+function renderThreadTicketInfo(ticket) {
+  const el = document.getElementById('threadTicketInfo');
+  if (!ticket) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <span class="tag ticket-id">${ticket.ticket_id}</span>
+    <span class="tag priority-${ticket.priority}">${ticket.priority} priority</span>
+    <span class="tag">${ticket.issue_type}</span>
+    <span class="tag">${ticket.status}</span>
+  `;
 }
 
 function renderThreadMessages(messages) {
@@ -565,6 +925,10 @@ async function submitResolution(resolution, confirmed) {
     document.getElementById('threadLogLine').textContent = `${err}`;
   }
 }
+
+// --- Init ---------------------------------------------------------------
+populateUserPicker();
+refreshSidebar();
 </script>
 </body>
 </html>

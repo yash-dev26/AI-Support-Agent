@@ -9,8 +9,10 @@ from langgraph.types import Command
 from app.core.deps import get_graph_app, log_event
 from app.core.rate_limit import limiter
 from app.core.auth import get_current_token, TokenPayload, require_support_agent
+from app.core.agent_logging import log_response
 from app.services import escalation_store
 from app.services import money_detection
+from app.services import ticket_store
 from app.services.ws_manager import manager
 
 logger = logging.getLogger("support_agent.support")
@@ -58,13 +60,65 @@ def list_pending(current: TokenPayload = Depends(get_current_token)):
         interrupts = getattr(state, "interrupts", ())
         if interrupts:
             payload = interrupts[0].value or {}
+            ticket = None
+            ticket_id = payload.get("ticket_id")
+            if ticket_id:
+                try:
+                    ticket = _serialize_ticket(ticket_store.get_ticket(ticket_id))
+                except Exception:
+                    logger.warning("Failed to load ticket %s for thread %s", ticket_id, user_id, exc_info=True)
             pending.append({
                 "thread_id": user_id,
                 "query": payload.get("query"),
                 "message": payload.get("message"),
+                "issue_type": payload.get("issue_type"),
+                "ticket": ticket,
                 "message_count": len(escalation_store.get_messages(user_id)),
             })
     return {"pending": pending}
+
+
+def _serialize_ticket(ticket: dict | None) -> dict | None:
+    """Mongo docs store datetimes as datetime objects, not JSON-safe
+    strings — this is the one place that conversion happens so every
+    endpoint returning a ticket does it the same way."""
+    if not ticket:
+        return None
+    out = dict(ticket)
+    for field in ("created_at", "resolved_at"):
+        if out.get(field) is not None:
+            out[field] = out[field].isoformat()
+    return out
+
+
+@router.get("/tickets")
+def list_open_tickets(current: TokenPayload = Depends(get_current_token)):
+    """All currently-open support tickets. Requires a support_agent token.
+    Complements /support/pending: pending is "what's paused on the graph
+    right now", this is "what tickets exist" — useful once a demo or real
+    deployment wants a ticket queue view independent of interrupt state."""
+    require_support_agent(current)
+    try:
+        tickets = ticket_store.list_open_tickets()
+    except Exception:
+        logger.exception("Failed to list open tickets")
+        raise HTTPException(status_code=503, detail="Could not read ticket store.")
+    return {"tickets": [_serialize_ticket(t) for t in tickets]}
+
+
+@router.get("/tickets/{ticket_id}")
+def get_ticket(ticket_id: str, current: TokenPayload = Depends(get_current_token)):
+    """A single ticket's detail, regardless of open/resolved status.
+    Requires a support_agent token."""
+    require_support_agent(current)
+    try:
+        ticket = ticket_store.get_ticket(ticket_id)
+    except Exception:
+        logger.exception("Failed to load ticket %s", ticket_id)
+        raise HTTPException(status_code=503, detail="Could not read ticket store.")
+    if not ticket:
+        raise HTTPException(status_code=404, detail="No ticket found with that id.")
+    return _serialize_ticket(ticket)
 
 
 @router.get("/thread/{thread_id}")
@@ -81,9 +135,19 @@ def get_thread(thread_id: str, current: TokenPayload = Depends(get_current_token
         logger.exception("Failed to read state for thread %s", thread_id)
         raise HTTPException(status_code=503, detail="Could not reach state store.")
 
-    pending = bool(getattr(state, "interrupts", ()))
+    interrupts = getattr(state, "interrupts", ())
+    pending = bool(interrupts)
+    ticket = None
+    if pending:
+        payload = interrupts[0].value or {}
+        ticket_id = payload.get("ticket_id")
+        if ticket_id:
+            try:
+                ticket = _serialize_ticket(ticket_store.get_ticket(ticket_id))
+            except Exception:
+                logger.warning("Failed to load ticket %s for thread %s", ticket_id, thread_id, exc_info=True)
     messages = escalation_store.get_messages(thread_id)
-    return {"thread_id": thread_id, "pending": pending, "messages": messages}
+    return {"thread_id": thread_id, "pending": pending, "ticket": ticket, "messages": messages}
 
 
 @router.post("/thread/{thread_id}/reply")
@@ -176,6 +240,7 @@ def resolve(request: Request, thread_id: str, req: ResolveRequest, current: Toke
         resolution_latency_ms=int((time.monotonic() - resume_start) * 1000),
     )
     reply = last_messages[-1].content if last_messages else ""
+    log_response(logger, thread_id, reply, status="resolved_by_human")
 
     # Push the resolution to the original user if they have an open
     # websocket connection (POST /chat/{user_id} already returned and closed
@@ -190,3 +255,5 @@ def resolve(request: Request, thread_id: str, req: ResolveRequest, current: Toke
         delivered = False
 
     return {"status": "resumed", "final_reply": reply, "delivered_to_user": delivered}
+
+

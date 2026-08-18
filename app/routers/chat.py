@@ -1,24 +1,62 @@
 import time
-import logging
 import asyncio
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Request, Depends
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from langchain_core.messages import AIMessage, ToolMessage
 
 from app.core.deps import get_graph_app, log_event
 from app.core.rate_limit import limiter
 from app.core.auth import get_current_token, TokenPayload, require_matching_user, _decode
+from app.core.agent_logging import get_logger, log_response
 from app.services.ws_manager import manager
 from app.services import escalation_store
 from app.services import guardrails
 
-logger = logging.getLogger("support_agent.chat")
+logger = get_logger("chat")
 router = APIRouter(tags=["chat"])
 
 
 class ChatRequest(BaseModel):
     message: str
+
+
+def _extract_tool_trace(new_messages: list) -> list[dict]:
+    """Pulls a demo-friendly "what did the agent do" trace out of the
+    messages produced during THIS turn (caller passes only the slice
+    after the incoming HumanMessage, not the whole thread history).
+
+    Deliberately reads this back out of the message list after the run
+    completes, rather than adding a callback/streaming layer to nodes.py
+    or tools.py, so the tool functions themselves stay untouched — this
+    is purely a presentation-layer concern for the demo sidebar
+    (app/graph/tools.py's actual behavior doesn't change either way).
+
+    create_support_ticket is handled specially: when it calls interrupt(),
+    execution pauses INSIDE the tool before a ToolMessage is ever produced
+    for that call — so "no matching ToolMessage yet" means "escalated and
+    waiting on a human", not "still running", for that one tool.
+    """
+    result_by_call_id = {
+        m.tool_call_id: m.content for m in new_messages if isinstance(m, ToolMessage)
+    }
+    trace = []
+    for m in new_messages:
+        if not isinstance(m, AIMessage) or not m.tool_calls:
+            continue
+        for tc in m.tool_calls:
+            name = tc["name"]
+            call_id = tc.get("id")
+            has_result = call_id in result_by_call_id
+            if name == "create_support_ticket":
+                status = "escalated"
+            elif has_result:
+                status = "completed"
+            else:
+                status = "pending"
+            trace.append({"tool": name, "status": status})
+    return trace
 
 
 @router.post("/chat/{user_id}")
@@ -35,7 +73,7 @@ def chat(request: Request, user_id: str, req: ChatRequest, current: TokenPayload
     require_matching_user(user_id, current)
 
     try:
-        blocked, refusal = asyncio.run(guardrails.check_message(req.message))
+        blocked, refusal = asyncio.run(guardrails.check_message(req.message, thread_id=user_id))
     except Exception:
         logger.exception("Guardrails check raised unexpectedly for user %s — failing open", user_id)
         blocked, refusal = False, None
@@ -45,6 +83,7 @@ def chat(request: Request, user_id: str, req: ChatRequest, current: TokenPayload
         # this should protect a human agent from injection/abuse in the
         # side-channel too, not just the LLM.
         log_event("blocked_by_guardrails", user_id)
+        log_response(logger, user_id, refusal or "", status="blocked")
         return {"status": "blocked", "message": refusal}
 
     graph_app = get_graph_app()
@@ -68,6 +107,7 @@ def chat(request: Request, user_id: str, req: ChatRequest, current: TokenPayload
             "message": "Message sent to support. Waiting for a reply...",
         }
 
+    prior_message_count = len(state.values.get("messages", []))
     start = time.monotonic()
     last_messages = []
     try:
@@ -86,6 +126,8 @@ def chat(request: Request, user_id: str, req: ChatRequest, current: TokenPayload
                    "No state was corrupted; please retry.",
         )
 
+    tool_calls = _extract_tool_trace(last_messages[prior_message_count:])
+
     try:
         new_state = graph_app.get_state(config)
     except Exception:
@@ -96,14 +138,18 @@ def chat(request: Request, user_id: str, req: ChatRequest, current: TokenPayload
         payload = new_state.interrupts[0].value or {}
         escalation_store.add_message(user_id, "user", req.message)
         log_event("escalated", user_id, query=payload.get("query"))
+        log_response(logger, user_id, payload.get("message", ""), status="escalated")
         return {
             "status": "escalated",
             "message": "Your request has been escalated to a human agent. Please wait.",
+            "tool_calls": tool_calls,
+            "ticket_id": payload.get("ticket_id"),
         }
 
     log_event("resolved_by_agent", user_id, latency_ms=int((time.monotonic() - start) * 1000))
     reply = last_messages[-1].content if last_messages else ""
-    return {"status": "ok", "reply": reply}
+    log_response(logger, user_id, reply, status="ok")
+    return {"status": "ok", "reply": reply, "tool_calls": tool_calls}
 
 
 @router.get("/chat/{user_id}/status")
@@ -209,3 +255,5 @@ def ws_test_page(user_id: str):
   </script>
 </body>
 </html>"""
+
+

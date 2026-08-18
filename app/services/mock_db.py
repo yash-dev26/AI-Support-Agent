@@ -38,6 +38,12 @@ PRODUCTS = [
     ("Smart LED Desk Lamp", 2299), ("USB Microphone", 3999), ("Graphics Tablet", 8999),
 ]
 ORDER_STATUSES = ["delivered", "shipped", "processing", "cancelled", "refunded"]
+# Tracking numbers only make sense once an order has actually left the
+# warehouse — "processing"/"cancelled"/"refunded" orders get NULL, not a
+# fake number, so get_latest_order/get_order_by_id can tell a real reader
+# "not shipped yet" instead of printing a bogus tracking code.
+TRACKING_ELIGIBLE_STATUSES = {"shipped", "delivered"}
+CARRIERS = ["BlueDart", "Delhivery", "DTDC", "India Post"]
 
 
 @contextmanager
@@ -66,6 +72,8 @@ def init_schema():
             amount_cents INTEGER NOT NULL,
             status TEXT NOT NULL,
             placed_at TEXT NOT NULL,
+            tracking_number TEXT,
+            carrier TEXT,
             FOREIGN KEY(user_id) REFERENCES users(user_id)
         );
 
@@ -82,10 +90,17 @@ def init_schema():
 
 
 def _insert_order(conn, order_id, user_id, product, price_cents, status, days_ago):
+    tracking_number, carrier = (None, None)
+    if status in TRACKING_ELIGIBLE_STATUSES:
+        # Deterministic from order_id (not random) so re-running seed with
+        # the same scripted order_ids doesn't produce a different tracking
+        # number every time — useful when a demo video needs a stable value.
+        tracking_number = f"TRK{abs(hash(order_id)) % 10**9:09d}"
+        carrier = CARRIERS[abs(hash(order_id)) % len(CARRIERS)]
     conn.execute(
-        """INSERT INTO orders (order_id, user_id, product_name, amount_cents, status, placed_at)
-           VALUES (?, ?, ?, ?, ?, datetime('now', ?))""",
-        (order_id, user_id, product, price_cents, status, f"-{days_ago} days"),
+        """INSERT INTO orders (order_id, user_id, product_name, amount_cents, status, placed_at, tracking_number, carrier)
+           VALUES (?, ?, ?, ?, ?, datetime('now', ?), ?, ?)""",
+        (order_id, user_id, product, price_cents, status, f"-{days_ago} days", tracking_number, carrier),
     )
 
 
@@ -182,21 +197,59 @@ def get_cart(user_id: str) -> list[dict]:
 def get_order_history(user_id: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            """SELECT order_id, product_name, amount_cents, status, placed_at
+            """SELECT order_id, product_name, amount_cents, status, placed_at, tracking_number, carrier
                FROM orders WHERE user_id = ? ORDER BY placed_at DESC""",
             (user_id,),
         ).fetchall()
         return [dict(r) for r in rows]
 
 
+def get_latest_order(user_id: str) -> dict | None:
+    """The single most recent order for a user, or None if they have never
+    ordered anything. Separate from get_order_history (which returns the
+    whole list) so a tool/caller that only cares about "my latest order"
+    doesn't have to fetch everything and pick index 0 itself."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT order_id, product_name, amount_cents, status, placed_at, tracking_number, carrier
+               FROM orders WHERE user_id = ? ORDER BY placed_at DESC LIMIT 1""",
+            (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def get_order_status(order_id: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT order_id, status, product_name, user_id FROM orders WHERE order_id = ?",
+            """SELECT order_id, status, product_name, user_id, amount_cents,
+                      placed_at, tracking_number, carrier
+               FROM orders WHERE order_id = ?""",
             (order_id,),
         ).fetchone()
         return dict(row) if row else None
 
 
+def get_profile(user_id: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id, name, email FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_user_ids(limit: int = 30) -> list[str]:
+    """Every seeded user_id, lowest-numbered first — powers the demo
+    frontend's user picker so a viewer can browse real users instead of
+    typing an id blind."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT user_id FROM users ORDER BY user_id LIMIT ?", (limit,)
+        ).fetchall()
+        return [r["user_id"] for r in rows]
+
+
 if __name__ == "__main__":
     seed(num_users=20)
+
+

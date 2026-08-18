@@ -96,3 +96,5 @@ def require_matching_user(user_id: str, current: TokenPayload) -> None:
 def require_support_agent(current: TokenPayload) -> None:
     if current.role != "support_agent":
         raise HTTPException(status_code=403, detail="This endpoint requires a support_agent token.")
+
+

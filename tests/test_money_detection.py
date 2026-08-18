@@ -43,3 +43,5 @@ def test_case_insensitive_keyword_match():
 
 def test_dollar_amount_without_symbol_but_with_word_detected():
     assert money_detection.looks_money_related("Issued a credit of 50 USD to your account.")
+
+

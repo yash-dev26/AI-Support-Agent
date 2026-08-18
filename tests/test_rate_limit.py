@@ -66,3 +66,5 @@ def test_rate_limit_is_scoped_per_user_not_global(client):
     headers_c = user_headers("rl_user_c")
     fresh = client.post("/chat/rl_user_c", json={"message": "hi"}, headers=headers_c)
     assert fresh.status_code == 200
+
+

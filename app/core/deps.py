@@ -43,3 +43,5 @@ def log_event(event_type: str, thread_id: str, **extra):
         "timestamp": datetime.now(timezone.utc),
         **extra,
     })
+
+

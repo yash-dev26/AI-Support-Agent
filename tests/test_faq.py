@@ -59,3 +59,5 @@ def test_damaged_on_arrival_question_does_not_match_any_faq_entry():
 def test_account_closure_question_does_not_match_any_faq_entry():
     result = faq.match_faq("I want to permanently delete and close my account")
     assert result is None
+
+

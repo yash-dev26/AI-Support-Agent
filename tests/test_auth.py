@@ -168,3 +168,5 @@ def test_auth_token_endpoint_rejects_invalid_role():
 
     resp = client.post("/auth/token", json={"user_id": "user_001", "role": "superadmin"})
     assert resp.status_code == 400
+
+

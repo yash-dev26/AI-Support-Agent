@@ -19,13 +19,14 @@ input rail itself runs. Without that, NeMo also generates a full
 throwaway reply via its own "general" flow on every allowed message —
 wasted since our own graph generates the real response.
 """
-import logging
 from pathlib import Path
 
 from nemoguardrails import LLMRails, RailsConfig
 from nemoguardrails.rails.llm.options import GenerationOptions, GenerationRailsOptions
 
-logger = logging.getLogger("support_agent.guardrails")
+from app.core.agent_logging import get_logger, log_guardrail
+
+logger = get_logger("guardrails")
 
 CONFIG_PATH = Path(__file__).parent.parent / "data" / "guardrails_config"
 
@@ -50,9 +51,15 @@ def _get_rails() -> LLMRails:
     return _rails
 
 
-async def check_message(user_message: str) -> tuple[bool, str | None]:
+async def check_message(user_message: str, thread_id: str = "unknown") -> tuple[bool, str | None]:
     """Returns (blocked, refusal_message). If not blocked, refusal_message
     is None and the caller should proceed normally.
+
+    thread_id is optional (defaults to "unknown") purely so existing
+    callers/tests that only care about the blocked/allowed logic don't
+    need to pass one — chat.py, the real caller, always supplies the
+    actual user_id so the [GUARDRAIL STATUS] log line is traceable back
+    to a specific conversation.
 
     With dialog=False, an allowed message comes back unchanged (NeMo just
     passes it through); a blocked message comes back as the rail's refusal
@@ -73,9 +80,14 @@ async def check_message(user_message: str) -> tuple[bool, str | None]:
         # system might choose to fail closed instead — deliberate tradeoff
         # for what this project is, not an oversight.
         logger.exception("Guardrails check failed — failing open, message will proceed normally")
+        log_guardrail(logger, thread_id, "self_check_input", "fail_open", reason="rails.generate_async raised")
         return False, None
 
     content = result.response[0]["content"]
     if content != user_message:
+        log_guardrail(logger, thread_id, "self_check_input", "blocked")
         return True, content
+    log_guardrail(logger, thread_id, "self_check_input", "passed")
     return False, None
+
+

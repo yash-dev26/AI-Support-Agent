@@ -85,7 +85,7 @@ app/routers/chat.py: chat()
         |                  model can't answer from what it retrieved
         |
         |      app/graph/graph.py: route_after_tools()
-        |        \- tool was check_policy (not human_interrupt_tool),
+        |        \- tool was check_policy (not create_support_ticket),
         |             so route back to chatbot -- the model turns the
         |             tool's raw result into a final reply
         |
@@ -101,7 +101,7 @@ call `check_policy`) + 0 or 1 (RAG generation, only on an FAQ miss) + 1
 
 ## 3. Escalation -- triggered by policy, not by request
 
-The system prompt (`app/graph/nodes.py`) is explicit: `human_interrupt_tool`
+The system prompt (`app/graph/nodes.py`) is explicit: `create_support_ticket`
 is called **only** when `check_policy` returns a result starting with
 `NO_ANSWER_FOUND`. A bare "let me talk to a human" is not itself sufficient.
 
@@ -119,9 +119,9 @@ POST /chat/user_001 {"message": "My payment was charged twice, order X"}
         |      human support agent"
         |   -> RAG generation cites this, model has real grounds to escalate
         |
-        |- chatbot calls human_interrupt_tool(query="duplicate charge...")
+        |- chatbot calls create_support_ticket(query="duplicate charge...")
         |
-        |   app/graph/tools.py: human_interrupt_tool()
+        |   app/graph/tools.py: create_support_ticket()
         |     \- interrupt({"query": ..., "message": ...})
         |          LangGraph PAUSES execution here. State is checkpointed
         |          to MongoDB (thread-scoped, via langgraph-checkpoint-mongodb).
@@ -208,12 +208,12 @@ POST /support/resolve/user_001 {"resolution": "Refund issued for $50.", "confirm
         |
         |- graph_app.stream(Command(resume={"data": resolution}))
         |      |
-        |      |  human_interrupt_tool()'s interrupt() call returns,
+        |      |  create_support_ticket()'s interrupt() call returns,
         |      |  with resolution as its return value -- the tool "result"
         |      |
         |      v
         |  app/graph/graph.py: route_after_tools()
-        |      |  the tool that just ran WAS human_interrupt_tool ->
+        |      |  the tool that just ran WAS create_support_ticket ->
         |      |  route straight to END, skip chatbot entirely.
         |      |  The resolution reaches the user VERBATIM -- no second
         |      |  LLM call re-paraphrasing a refund amount.
@@ -258,3 +258,5 @@ Frontend closes the connection itself after receiving "resolved".
 ```
 
 → See [`DECISIONS.md`: In-memory websocket connections do not need a message queue yet](./DECISIONS.md#in-memory-websocket-connections-do-not-need-a-message-queue-yet)
+
+

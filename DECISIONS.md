@@ -10,7 +10,7 @@ these actually fires during a request.
 
 ## Escalation is gated on a signal, not on request
 
-**Decision:** `human_interrupt_tool` is called only when `check_policy`
+**Decision:** `create_support_ticket` is called only when `check_policy`
 returns a result starting with `NO_ANSWER_FOUND`. The system prompt
 (`app/graph/nodes.py`) explicitly instructs the model not to escalate
 just because the user asks to talk to a human — it has to make a real
@@ -35,7 +35,7 @@ that's what the eval script is for.
 
 ## `route_after_tools` skips the LLM after a human resolves
 
-**Decision:** When `human_interrupt_tool` is the tool that just ran,
+**Decision:** When `create_support_ticket` is the tool that just ran,
 `app/graph/graph.py`'s `route_after_tools` routes straight to `END`
 instead of back through `chatbot`. The support agent's resolution text
 reaches the user **verbatim**.
@@ -206,11 +206,11 @@ verification; nothing downstream changes.
 
 ## Tool-level authorization uses injected config, not LLM-supplied arguments
 
-**Decision:** `get_cart_items` and `get_order_history`
+**Decision:** `get_user_cart` and `get_order_history`
 (`app/graph/tools.py`) take zero LLM-visible arguments — they read the
 current `user_id` from an injected `RunnableConfig`, bound from the
 authenticated session in `chat.py`, not from anything the model outputs.
-`get_order_status` still takes an LLM-supplied `order_id` (the user has to
+`get_order_by_id` still takes an LLM-supplied `order_id` (the user has to
 say which order), but checks the order's owning `user_id` against the
 injected one before returning any data.
 
@@ -220,7 +220,7 @@ real problems followed: the model had no way to know the current user's
 id unless the user stated it directly in the conversation (a genuine
 usability bug — hit firsthand, not caught by any test beforehand), and
 more seriously, nothing stopped the model from calling
-`get_order_status(order_id=...)` for an order that belonged to a
+`get_order_by_id(order_id=...)` for an order that belonged to a
 *different* user and returning that data — an actual cross-user data leak
 via tool-calling, not a hypothetical one.
 
@@ -233,7 +233,7 @@ would still be LLM-controllable either way.
 
 **Tradeoff:** None significant on the cart/history tools — removing an
 argument the model shouldn't have had control over in the first place.
-`get_order_status`'s "not found" response is deliberately identical
+`get_order_by_id`'s "not found" response is deliberately identical
 whether an order doesn't exist or just isn't the current user's, so the
 distinction itself doesn't leak that a given order_id is real.
 
@@ -353,3 +353,5 @@ second, weaker example.
 not a tradeoff. Worth recording anyway because "we tried something, it
 worked well enough to ship, and we replaced it once something better
 existed" is itself a decision worth being able to explain.
+
+

@@ -96,3 +96,5 @@ def test_scripted_users_are_skipped_when_num_users_below_three():
     # with no scripted scenarios, user_001 should NOT have the duplicate charge
     orders = mock_db.get_order_history("user_001")
     assert not (len(orders) == 2 and orders[0]["product_name"] == "Mechanical Keyboard" == orders[1]["product_name"])
+
+

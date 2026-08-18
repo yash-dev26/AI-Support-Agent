@@ -56,3 +56,5 @@ def test_messages_are_isolated_per_thread():
 
 def test_empty_thread_returns_empty_list():
     assert escalation_store.get_messages("never_escalated_user") == []
+
+

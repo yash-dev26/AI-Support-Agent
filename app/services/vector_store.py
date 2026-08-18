@@ -104,3 +104,5 @@ def search(query: str, top_k: int = 3) -> list[dict]:
         {"doc_name": p.payload["doc_name"], "text": p.payload["text"], "score": p.score}
         for p in result.points
     ]
+
+

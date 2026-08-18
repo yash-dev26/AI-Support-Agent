@@ -69,3 +69,5 @@ def test_notify_drops_connection_on_send_failure():
     assert delivered is False
     # a broken connection should be cleaned up, not left dangling
     assert "user_001" not in manager._connections
+
+

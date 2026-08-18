@@ -33,3 +33,5 @@ def issue_token(req: TokenRequest):
         raise HTTPException(status_code=400, detail="role must be 'user' or 'support_agent'.")
     token = create_access_token(req.user_id, req.role)
     return TokenResponse(access_token=token, expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+
+

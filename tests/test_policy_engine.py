@@ -43,7 +43,7 @@ def test_no_faq_hit_and_no_relevant_vector_hits_returns_no_answer_signal(monkeyp
 
     result = policy_engine.answer("do you ship to the moon")
     assert result.startswith("NO_ANSWER_FOUND")
-    assert "human_interrupt_tool" in result
+    assert "create_support_ticket" in result
 
 
 def test_low_score_vector_hits_are_filtered_out_below_floor(monkeypatch):
@@ -72,7 +72,7 @@ def test_vector_search_failure_degrades_to_no_answer_signal_not_a_crash(monkeypa
 
     result = policy_engine.answer("anything")
     assert result.startswith("NO_ANSWER_FOUND")
-    assert "human_interrupt_tool" in result
+    assert "create_support_ticket" in result
 
 
 def test_generation_returning_no_answer_found_is_normalized_to_the_standard_signal(monkeypatch):
@@ -88,3 +88,5 @@ def test_generation_returning_no_answer_found_is_normalized_to_the_standard_sign
 
     result = policy_engine.answer("something the docs don't actually cover")
     assert result == policy_engine.NO_ANSWER_SIGNAL
+
+
