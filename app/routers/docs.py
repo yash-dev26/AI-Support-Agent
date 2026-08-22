@@ -6,6 +6,7 @@ from app.core.rate_limit import limiter
 from app.core.auth import get_current_token, TokenPayload, require_support_agent
 from app.services.vector_store import DOCS_DIR
 from app.services import vector_store
+from app.services import policy_engine
 
 logger = logging.getLogger("support_agent.docs")
 router = APIRouter(prefix="/docs", tags=["docs"])
@@ -27,7 +28,7 @@ async def upload_doc(request: Request, file: UploadFile = File(...), current: To
     require_support_agent(current)
 
     if file.filename is None or not file.filename.lower().endswith((".txt", ".md")):
-        raise HTTPException(status_code=400, detail="Only .txt and .md files are supported.")
+        raise HTTPException(status_code=400, detail="Only .txt and .md files are supported.") from None
 
     try:
         DOCS_DIR.mkdir(exist_ok=True)
@@ -36,10 +37,15 @@ async def upload_doc(request: Request, file: UploadFile = File(...), current: To
         dest.write_bytes(contents)
     except Exception:
         logger.exception("Failed to save uploaded doc %s", file.filename)
-        raise HTTPException(status_code=500, detail="Could not save the uploaded document.")
+        raise HTTPException(status_code=500, detail="Could not save the uploaded document.") from None
 
     try:
         chunks_indexed = vector_store.index_document(file.filename, contents.decode("utf-8", errors="ignore"))
+        # Otherwise a question that previously came back NO_ANSWER_FOUND
+        # (or was answered from now-outdated context) would keep serving
+        # its stale cached answer for the rest of the process's lifetime
+        # — see policy_engine.py's cache docstring.
+        policy_engine.clear_cache()
     except Exception:
         logger.exception("Saved %s but failed to index it into Qdrant", file.filename)
         # the file is saved either way — degrade rather than fail the whole

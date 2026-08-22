@@ -9,7 +9,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import asyncio
-import pytest
 from app.services.ws_manager import ConnectionManager
 
 

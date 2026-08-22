@@ -1,0 +1,29 @@
+# Curated for THIS codebase: catches real bugs (unused imports, undefined
+# names, syntax errors), not style preferences. Deliberately excludes
+# things like line-length (E501) — the codebase's explanatory comment
+# style consistently runs long on purpose, documenting *why* a decision
+# was made, and enforcing an 88/100-char wrap on that prose would fight
+# the house style rather than catch anything real. Not running the
+# formatter (`ruff format`) here for the same reason: this is a lint
+# gate for correctness, not a reformat-on-every-PR policy.
+target-version = "py312"
+
+[lint]
+# F = pyflakes (unused imports/variables, undefined names, etc.)
+# E9 = pycodestyle syntax errors
+# B  = bugbear (common real bugs: mutable default args, bare except, etc.)
+select = ["F", "E9", "B"]
+
+# B008: default arg calls FastAPI's own Depends()/Field() pattern
+# everywhere in this codebase (e.g. `current: TokenPayload =
+# Depends(get_current_token)`) — that's the framework's documented,
+# correct usage, not the mutable-default-argument bug B008 exists to
+# catch. Silencing it project-wide rather than sprinkling `# noqa` across
+# every route handler.
+ignore = ["B008"]
+
+[lint.per-file-ignores]
+# Test files intentionally construct throwaway fixtures/fakes inline;
+# bugbear's stricter checks add noise there without catching anything a
+# test actually needs guarding against.
+"tests/*" = ["B"]

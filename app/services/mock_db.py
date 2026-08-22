@@ -173,7 +173,7 @@ def seed(num_users: int = 20, force: bool = False):
                 _insert_order(conn, order_id, user_id, product, price * 100,
                                random.choice(ORDER_STATUSES), random.randint(1, 60))
 
-            for c in range(random.randint(0, 3)):
+            for _ in range(random.randint(0, 3)):
                 product, price = random.choice(PRODUCTS)
                 conn.execute(
                     """INSERT INTO cart_items (user_id, product_name, quantity, amount_cents)

@@ -7,6 +7,27 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Config lives in ruff.toml: a curated, real-bugs-only rule set
+      # (unused imports, undefined names, common bugbear footguns) —
+      # deliberately not a full formatter/style gate, since this
+      # codebase's explanatory-comment-heavy style is intentional, not
+      # something to auto-reformat away.
+      - name: Lint (ruff)
+        run: ruff check app/ tests/
+
   test:
     runs-on: ubuntu-latest
 
@@ -17,6 +38,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -24,10 +46,30 @@ jobs:
       - name: Compile check
         run: python -m compileall app tests
 
-      - name: Run unit tests
-        run: pytest tests/test_mock_db.py tests/test_ws_manager.py tests/test_graph_routing.py tests/test_faq.py tests/test_vector_store.py tests/test_policy_engine.py tests/test_escalation_store.py tests/test_escalation_flow.py tests/test_rate_limit.py tests/test_money_detection.py tests/test_guardrails.py tests/test_auth.py -v
-        # test_concurrent_escalation.py and manual_eval_escalation.py are
-        # integration/eval scripts requiring a live server + real Mongo/
-        # OpenAI credentials — run them manually, not in CI.
-
-
+      # No live OPENAI_API_KEY or MongoDB needed: every test either mocks
+      # its external dependency directly (mongomock for Mongo-backed
+      # services, monkeypatched LLM objects for graph/tool tests) or
+      # exercises guardrails.check_message's real fail-open behavior when
+      # the (fake) API key predictably fails auth — see
+      # tests/test_escalation_flow.py's module docstring for why that's
+      # documented as deliberate, not accidental. Set explicitly here
+      # anyway so CI matches exactly what's been verified locally,
+      # instead of implicitly depending on unset-env-var behavior.
+      - name: Run tests
+        env:
+          OPENAI_API_KEY: "sk-ci-placeholder-not-a-real-key"
+          MONGODB_URI: "mongodb://localhost:27017"
+          AUTH_SECRET_KEY: "ci-test-secret-not-for-production"
+        # Auto-discovers every tests/test_*.py file — no hardcoded file
+        # list to go stale as new test files get added (a prior version
+        # of this workflow hardcoded an explicit list here that had
+        # quietly drifted out of sync with the actual test suite; see
+        # README's changelog for the specifics). test_concurrent_escalation.py
+        # and manual_eval_escalation.py are excluded on purpose, not by
+        # accident: they're integration/eval scripts requiring a live
+        # server plus real Mongo/OpenAI credentials, meant to be run
+        # manually (see their own module docstrings) — the former has no
+        # pytest-discoverable test_* functions so pytest collects it and
+        # correctly finds zero tests either way; the latter doesn't match
+        # pytest's test_*.py discovery pattern at all.
+        run: pytest tests/ -v

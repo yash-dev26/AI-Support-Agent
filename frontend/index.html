@@ -13,12 +13,16 @@
   every message just gets relayed to the human until they click "Mark
   Resolved," at which point the LLM path reopens automatically.
 
-  The tool-call badges under each turn are NOT a real streaming trace —
-  /chat/{user_id} is a single request/response call, so by the time the
-  browser has the tool_calls list, the run already finished. The badges
-  are staged with a short animated delay purely so a viewer watching a
-  screen recording can actually see what the agent did, instead of a
-  blank pause followed by a reply appearing out of nowhere.
+  The tool-call badges under each turn are driven by real Server-Sent
+  Events from POST /chat/{user_id}/stream (see app/routers/chat.py's
+  chat_stream) — each badge appears the instant the model decides to
+  call that tool and settles the instant that tool actually finishes.
+  If a tool is slow, the gap you see between "Calling X…" and it
+  settling IS the real latency, not an animation. (An earlier version
+  of this file used the older non-streaming /chat/{user_id} endpoint
+  and staged the badges with an artificial delay after the fact, since
+  the whole turn had already finished by the time the response existed
+  — see README's changelog for that history.)
 -->
 <html lang="en">
 <head>
@@ -499,42 +503,78 @@ function friendlyToolLabel(name) {
   return TOOL_LABELS[name] || name;
 }
 
-// Renders each tool call as a badge that starts in a "calling" state and
-// flips to "done"/"escalated" a beat later — see the file-level comment
-// at the top for why this is staged rather than truly live. Returns a
-// promise that resolves once every badge has settled, so the caller can
-// wait before revealing the final reply.
-function renderToolBadges(toolCalls) {
-  return new Promise((resolve) => {
-    if (!toolCalls || toolCalls.length === 0) { resolve(); return; }
-    const log = document.getElementById('chatLog');
-    let i = 0;
-    const STEP_MS = 550;
+// Genuinely live now — these badges are driven by real Server-Sent
+// Events from POST /chat/{user_id}/stream (see app/routers/chat.py's
+// chat_stream), not a staged/faked reveal. A badge appears the instant
+// the "tool_call_start" event arrives (i.e. the moment the LLM decided
+// to call that tool) and flips to done/escalated the instant
+// "tool_call_end"/"escalated" arrives (i.e. the moment that tool
+// actually finished) — if a tool is slow, the gap you see IS the real
+// latency, not an animation.
+function startToolBadge(toolName) {
+  const log = document.getElementById('chatLog');
+  const div = document.createElement('div');
+  div.className = 'tool-badge';
+  div.innerHTML = `<span class="dot3"><span></span><span></span><span></span></span>` +
+                   `Calling <strong>${friendlyToolLabel(toolName)}</strong>…`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return div;
+}
 
-    function next() {
-      if (i >= toolCalls.length) { resolve(); return; }
-      const call = toolCalls[i];
-      const div = document.createElement('div');
-      div.className = 'tool-badge';
-      div.innerHTML = `<span class="dot3"><span></span><span></span><span></span></span>` +
-                       `Calling <strong>${friendlyToolLabel(call.tool)}</strong>…`;
-      log.appendChild(div);
-      log.scrollTop = log.scrollHeight;
+function settleToolBadge(div, toolName, status) {
+  if (status === 'escalated') {
+    div.className = 'tool-badge escalated';
+    div.innerHTML = `<span class="icon">🎫</span> ${friendlyToolLabel(toolName)} — escalated to a human`;
+  } else if (status === 'empty') {
+    div.className = 'tool-badge done';
+    div.innerHTML = `<span class="icon">✓</span> ${friendlyToolLabel(toolName)} — nothing found`;
+  } else if (status === 'degraded' || status === 'no_answer') {
+    div.className = 'tool-badge done';
+    div.innerHTML = `<span class="icon">⚠</span> ${friendlyToolLabel(toolName)} — no answer available`;
+  } else {
+    div.className = 'tool-badge done';
+    div.innerHTML = `<span class="icon">✓</span> ${friendlyToolLabel(toolName)} — data retrieved`;
+  }
+  document.getElementById('chatLog').scrollTop = document.getElementById('chatLog').scrollHeight;
+}
 
-      setTimeout(() => {
-        if (call.status === 'escalated') {
-          div.className = 'tool-badge escalated';
-          div.innerHTML = `<span class="icon">🎫</span> ${friendlyToolLabel(call.tool)} — escalated to a human`;
-        } else {
-          div.className = 'tool-badge done';
-          div.innerHTML = `<span class="icon">✓</span> ${friendlyToolLabel(call.tool)} — data retrieved`;
-        }
-        i += 1;
-        setTimeout(next, STEP_MS * 0.4);
-      }, STEP_MS);
+// Parses one SSE frame ("event: X\ndata: {...}") into {event, data}.
+// Frames are separated by a blank line per the SSE spec — see _sse() in
+// chat.py, which is what actually produces these on the wire.
+function parseSseFrame(frame) {
+  const eventMatch = frame.match(/^event: (.+)$/m);
+  const dataMatch = frame.match(/^data: (.+)$/m);
+  if (!eventMatch || !dataMatch) return null;
+  try {
+    return { event: eventMatch[1], data: JSON.parse(dataMatch[1]) };
+  } catch (e) {
+    return null;
+  }
+}
+
+// Reads a fetch() ReadableStream body and calls onEvent(event, data) for
+// each SSE frame as it arrives. Deliberately fetch()-based rather than
+// the native EventSource API — EventSource only supports GET requests
+// and can't attach an Authorization header, both of which this endpoint
+// needs (POST with a bearer token). This is the standard workaround for
+// authenticated SSE from a browser.
+async function consumeSseStream(response, onEvent) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sepIndex;
+    while ((sepIndex = buffer.indexOf('\n\n')) !== -1) {
+      const frame = buffer.slice(0, sepIndex);
+      buffer = buffer.slice(sepIndex + 2);
+      const parsed = parseSseFrame(frame);
+      if (parsed) onEvent(parsed.event, parsed.data);
     }
-    next();
-  });
+  }
 }
 
 function currentUserId() {
@@ -695,35 +735,67 @@ async function sendMessage() {
   const userId = currentUserId();
 
   const typingEl = escalated ? null : appendTyping();
+  let typingRemoved = false;
+  const removeTyping = () => {
+    if (typingEl && !typingRemoved) { typingEl.remove(); typingRemoved = true; }
+  };
+
+  // tool_call_id isn't part of the SSE payload (only the tool name and
+  // status are — see chat.py's _sse() calls), and a turn could in theory
+  // call the same tool name twice, so badges are tracked by POSITION
+  // (a simple queue) rather than by id: each "tool_call_start" pushes a
+  // badge element, each "tool_call_end" pops and settles the oldest
+  // still-open one. This matches how the events are actually emitted —
+  // starts and ends for one turn's calls arrive as two separate ordered
+  // groups (see the docstring on chat_stream), not interleaved per call.
+  const openBadges = [];
 
   try {
     const token = await getUserToken(userId);
-    const resp = await fetch(`${API_BASE}/chat/${encodeURIComponent(userId)}`, {
+    const resp = await fetch(`${API_BASE}/chat/${encodeURIComponent(userId)}/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       body: JSON.stringify({ message }),
     });
-    const data = await resp.json();
-    if (typingEl) typingEl.remove();
 
     if (!resp.ok) {
-      appendMessage('system', `Request failed: ${data.detail || resp.status}`);
-    } else if (data.status === 'escalated') {
-      await renderToolBadges(data.tool_calls);
-      if (!escalated) {
-        escalated = true;
-        const ticketNote = data.ticket_id ? ` (ticket ${data.ticket_id})` : '';
-        setBanner(`Escalated to a human agent${ticketNote} — waiting for a reply...`, 'connecting');
-        connectWebSocket(userId, token);
-      }
-    } else if (data.status === 'blocked') {
-      appendMessage('system', data.message || 'That message was blocked by guardrails.');
-    } else {
-      await renderToolBadges(data.tool_calls);
-      appendMessage('assistant', data.reply || '');
+      removeTyping();
+      let detail = resp.status;
+      try { detail = (await resp.json()).detail || detail; } catch (e) { /* body wasn't JSON */ }
+      appendMessage('system', `Request failed: ${detail}`);
+      return;
     }
+
+    await consumeSseStream(resp, (event, data) => {
+      if (event === 'tool_call_start') {
+        removeTyping();
+        openBadges.push(startToolBadge(data.tool));
+      } else if (event === 'tool_call_end') {
+        const div = openBadges.shift();
+        if (div) settleToolBadge(div, data.tool, data.status);
+      } else if (event === 'agent_reply') {
+        removeTyping();
+        appendMessage('assistant', data.text || '');
+      } else if (event === 'escalated' || event === 'already_escalated') {
+        removeTyping();
+        if (!escalated) {
+          escalated = true;
+          const ticketNote = data.ticket_id ? ` (ticket ${data.ticket_id})` : '';
+          setBanner(`Escalated to a human agent${ticketNote} — waiting for a reply...`, 'connecting');
+          connectWebSocket(userId, token);
+        }
+      } else if (event === 'blocked') {
+        removeTyping();
+        appendMessage('system', data.message || 'That message was blocked by guardrails.');
+      } else if (event === 'error') {
+        removeTyping();
+        appendMessage('system', data.message || 'Something went wrong processing that message.');
+      }
+      // "done" needs no handling — it's purely a signal for consumeSseStream's
+      // caller that the stream is about to close, which the loop already detects.
+    });
   } catch (err) {
-    if (typingEl) typingEl.remove();
+    removeTyping();
     appendMessage('system', `Could not reach the API: ${err}`);
   } finally {
     document.getElementById('sendBtn').disabled = false;

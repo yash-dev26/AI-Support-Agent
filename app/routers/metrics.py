@@ -19,7 +19,7 @@ def metrics():
         resolved_by_agent = list(col.find({"event_type": "resolved_by_agent"}))
     except Exception:
         logger.exception("Failed to compute metrics")
-        raise HTTPException(status_code=503, detail="Metrics store unavailable.")
+        raise HTTPException(status_code=503, detail="Metrics store unavailable.") from None
 
     avg_resolution_ms = (
         sum(e["resolution_latency_ms"] for e in resolved_by_human) / len(resolved_by_human)

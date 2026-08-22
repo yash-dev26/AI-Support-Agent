@@ -1,0 +1,58 @@
+# One-command local dev: `docker compose up --build`.
+#
+# Only two services, deliberately: the app, and MongoDB (checkpointer +
+# escalation store + ticket store + metrics events — see DECISIONS.md).
+# There's no separate Qdrant service here because vector_store.py runs
+# Qdrant in EMBEDDED mode (qdrant-client with path=..., in-process, no
+# server) — see vector_store.py's own module docstring for why that
+# tradeoff was made deliberately for this project's scale. A real
+# multi-instance deployment would want a real Qdrant service instead;
+# this compose file matches what the app actually does today; it isn't
+# a from-scratch aspirational architecture.
+#
+# NOT built for or tested against production traffic — no TLS
+# termination, no replica set, no resource limits tuned for anything
+# beyond a laptop. This is a local-dev / demo convenience, not a
+# deployment manifest.
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      MONGODB_URI: "mongodb://mongo:27017"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:?Set OPENAI_API_KEY in your .env or shell environment}"
+      AUTH_SECRET_KEY: "${AUTH_SECRET_KEY:-}"
+      CHECKPOINT_TTL_SECONDS: "${CHECKPOINT_TTL_SECONDS:-2592000}"
+      MAX_CONTEXT_TURNS: "${MAX_CONTEXT_TURNS:-12}"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    volumes:
+      # Persists the seeded SQLite commerce DB and the embedded Qdrant
+      # index across container restarts. Not strictly required —
+      # mock_db.seed() is a no-op if data already exists, and
+      # vector_store.index_all_docs() is idempotent — but without this,
+      # a container restart silently re-seeds/re-indexes from scratch
+      # every time, which is wasted work for no benefit in a normal dev
+      # loop.
+      - app_data:/code/app/data
+
+volumes:
+  mongo_data:
+  app_data:

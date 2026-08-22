@@ -58,9 +58,9 @@ def _decode(token: str) -> TokenPayload:
     try:
         raw = jwt.decode(token, _SECRET_KEY, algorithms=[ALGORITHM])
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired.")
+        raise HTTPException(status_code=401, detail="Token expired.") from None
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token.")
+        raise HTTPException(status_code=401, detail="Invalid token.") from None
     return TokenPayload(sub=raw["sub"], role=raw.get("role", "user"))
 
 
@@ -79,7 +79,7 @@ def get_current_token_from_query(token: Optional[str] = Query(None)) -> TokenPay
     WebSocket handshake, so the token travels as a query param instead
     (?token=...). Same validation either way."""
     if not token:
-        raise HTTPException(status_code=401, detail="Missing token query parameter.")
+        raise HTTPException(status_code=401, detail="Missing token query parameter.") from None
     return _decode(token)
 
 
@@ -90,11 +90,11 @@ def require_matching_user(user_id: str, current: TokenPayload) -> None:
     if current.role == "support_agent":
         return
     if current.sub != user_id:
-        raise HTTPException(status_code=403, detail="Token does not grant access to this user_id.")
+        raise HTTPException(status_code=403, detail="Token does not grant access to this user_id.") from None
 
 
 def require_support_agent(current: TokenPayload) -> None:
     if current.role != "support_agent":
-        raise HTTPException(status_code=403, detail="This endpoint requires a support_agent token.")
+        raise HTTPException(status_code=403, detail="This endpoint requires a support_agent token.") from None
 
 

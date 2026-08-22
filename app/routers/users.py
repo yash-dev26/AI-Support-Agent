@@ -34,10 +34,10 @@ def get_user_context(user_id: str, current: TokenPayload = Depends(get_current_t
         cart = mock_db.get_cart(user_id)
     except Exception:
         logger.exception("Failed to load context for user %s", user_id)
-        raise HTTPException(status_code=503, detail="Could not reach the commerce store. Try again shortly.")
+        raise HTTPException(status_code=503, detail="Could not reach the commerce store. Try again shortly.") from None
 
     if not profile:
-        raise HTTPException(status_code=404, detail=f"No user found with id {user_id}.")
+        raise HTTPException(status_code=404, detail=f"No user found with id {user_id}.") from None
 
     cart_total_cents = sum(item["amount_cents"] * item["quantity"] for item in cart)
 
@@ -61,4 +61,4 @@ def list_users(current: TokenPayload = Depends(get_current_token)):
         return {"user_ids": mock_db.list_user_ids(limit=30)}
     except Exception:
         logger.exception("Failed to list users")
-        raise HTTPException(status_code=503, detail="Could not reach the commerce store. Try again shortly.")
+        raise HTTPException(status_code=503, detail="Could not reach the commerce store. Try again shortly.") from None

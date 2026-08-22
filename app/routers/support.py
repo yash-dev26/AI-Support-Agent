@@ -3,7 +3,7 @@ import logging
 import asyncio
 
 from fastapi import APIRouter, HTTPException, Request, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from langgraph.types import Command
 
 from app.core.deps import get_graph_app, log_event
@@ -18,14 +18,35 @@ from app.services.ws_manager import manager
 logger = logging.getLogger("support_agent.support")
 router = APIRouter(prefix="/support", tags=["support"])
 
+# Same rationale as chat.py's MAX_MESSAGE_LENGTH — bounds prompt/storage
+# size for agent-authored text. Generous relative to what a real
+# resolution or reply needs; just a backstop against a runaway paste.
+MAX_TEXT_LENGTH = 4000
+
+
+def _not_blank(v: str) -> str:
+    if not v.strip():
+        raise ValueError("cannot be blank")
+    return v
+
 
 class ResolveRequest(BaseModel):
-    resolution: str
+    resolution: str = Field(..., min_length=1, max_length=MAX_TEXT_LENGTH)
     confirmed: bool = False
+
+    @field_validator("resolution")
+    @classmethod
+    def _resolution_not_blank(cls, v: str) -> str:
+        return _not_blank(v)
 
 
 class ReplyRequest(BaseModel):
-    text: str
+    text: str = Field(..., min_length=1, max_length=MAX_TEXT_LENGTH)
+
+    @field_validator("text")
+    @classmethod
+    def _text_not_blank(cls, v: str) -> str:
+        return _not_blank(v)
 
 
 @router.get("/pending")
@@ -48,7 +69,7 @@ def list_pending(current: TokenPayload = Depends(get_current_token)):
         known_threads = escalation_store.get_distinct_thread_ids()
     except Exception:
         logger.exception("Failed to read known threads from escalation_store")
-        raise HTTPException(status_code=503, detail="Could not read thread list.")
+        raise HTTPException(status_code=503, detail="Could not read thread list.") from None
 
     for user_id in known_threads:
         config = {"configurable": {"thread_id": user_id, "user_id": user_id}}
@@ -102,7 +123,7 @@ def list_open_tickets(current: TokenPayload = Depends(get_current_token)):
         tickets = ticket_store.list_open_tickets()
     except Exception:
         logger.exception("Failed to list open tickets")
-        raise HTTPException(status_code=503, detail="Could not read ticket store.")
+        raise HTTPException(status_code=503, detail="Could not read ticket store.") from None
     return {"tickets": [_serialize_ticket(t) for t in tickets]}
 
 
@@ -115,9 +136,9 @@ def get_ticket(ticket_id: str, current: TokenPayload = Depends(get_current_token
         ticket = ticket_store.get_ticket(ticket_id)
     except Exception:
         logger.exception("Failed to load ticket %s", ticket_id)
-        raise HTTPException(status_code=503, detail="Could not read ticket store.")
+        raise HTTPException(status_code=503, detail="Could not read ticket store.") from None
     if not ticket:
-        raise HTTPException(status_code=404, detail="No ticket found with that id.")
+        raise HTTPException(status_code=404, detail="No ticket found with that id.") from None
     return _serialize_ticket(ticket)
 
 
@@ -133,7 +154,7 @@ def get_thread(thread_id: str, current: TokenPayload = Depends(get_current_token
         state = graph_app.get_state(config)
     except Exception:
         logger.exception("Failed to read state for thread %s", thread_id)
-        raise HTTPException(status_code=503, detail="Could not reach state store.")
+        raise HTTPException(status_code=503, detail="Could not reach state store.") from None
 
     interrupts = getattr(state, "interrupts", ())
     pending = bool(interrupts)
@@ -164,10 +185,10 @@ async def reply_to_thread(request: Request, thread_id: str, req: ReplyRequest, c
         state = graph_app.get_state(config)
     except Exception:
         logger.exception("Failed to read state for thread %s", thread_id)
-        raise HTTPException(status_code=503, detail="Could not reach state store.")
+        raise HTTPException(status_code=503, detail="Could not reach state store.") from None
 
     if not getattr(state, "interrupts", ()):
-        raise HTTPException(status_code=404, detail="This thread isn't currently escalated.")
+        raise HTTPException(status_code=404, detail="This thread isn't currently escalated.") from None
 
     escalation_store.add_message(thread_id, "support", req.text)
     try:
@@ -213,10 +234,10 @@ def resolve(request: Request, thread_id: str, req: ResolveRequest, current: Toke
         state = graph_app.get_state(config)
     except Exception:
         logger.exception("Failed to read state for thread %s", thread_id)
-        raise HTTPException(status_code=503, detail="Could not reach state store.")
+        raise HTTPException(status_code=503, detail="Could not reach state store.") from None
 
     if not getattr(state, "interrupts", ()):
-        raise HTTPException(status_code=404, detail="No pending interrupt for this thread.")
+        raise HTTPException(status_code=404, detail="No pending interrupt for this thread.") from None
 
     escalation_store.add_message(thread_id, "support", req.resolution)
 
@@ -233,7 +254,7 @@ def resolve(request: Request, thread_id: str, req: ResolveRequest, current: Toke
             status_code=502,
             detail="Resuming the agent failed (upstream model or DB error). "
                    "The thread is still marked as pending — safe to retry.",
-        )
+        ) from None
 
     log_event(
         "resolved_by_human", thread_id,

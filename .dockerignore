@@ -1,0 +1,22 @@
+# Keeps the build context small and, more importantly, makes it
+# structurally impossible for local secrets or dev-only artifacts to
+# accidentally end up baked into an image layer.
+.git/
+.github/
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+venv/
+tests/
+*.egg-info/
+.env
+.env.*
+!.env.example
+app/data/
+frontend/node_modules/
+*.db
+README.md
+DECISIONS.md
+REQUEST_FLOW.md
+docker-compose.yml

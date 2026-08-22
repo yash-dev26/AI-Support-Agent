@@ -3,15 +3,27 @@ Node functions for the graph. The LLM itself is set up here since the
 chatbot node is the only thing that calls it — graph.py shouldn't need
 to know about model config to wire nodes together.
 """
+import os
+
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.agent_logging import get_logger, log_agent
+from app.core.retry import with_retry
 from app.graph.state import State
 from app.graph.tools import TOOLS
 
 logger = get_logger("nodes")
+
+# How many of the most recent "turns" (a turn = one HumanMessage plus
+# everything the agent did in response to it — AIMessages, ToolMessages,
+# up to the next HumanMessage) are sent to the LLM. Bounds the prompt
+# size, and therefore both latency and $ per call, for a long-running
+# thread instead of letting it grow unboundedly for the life of the
+# checkpointed conversation. See _trim_to_recent_turns for why the unit
+# is "whole turns" and not "last N messages" or "last N tokens".
+MAX_CONTEXT_TURNS = int(os.getenv("MAX_CONTEXT_TURNS", "12"))
 
 SYSTEM_PROMPT = (
     "You are a customer support agent. You have tools to look up a user's cart "
@@ -38,7 +50,15 @@ SYSTEM_PROMPT = (
     "user's issue instead of escalating anyway. When you do call "
     "create_support_ticket, give it a short issue_type category and a details "
     "summary that includes what you've already learned from your other tool "
-    "calls, so the human agent doesn't start cold."
+    "calls, so the human agent doesn't start cold.\n\n"
+    "If you need more than one independent piece of information to answer — e.g. "
+    "both their latest order AND a policy check, or their cart AND their order "
+    "history — request all of those tool calls together in the SAME turn rather "
+    "than one at a time across multiple turns. They don't depend on each other's "
+    "results, so there's no reason to wait for one before asking for the next; "
+    "requesting them together lets them run in parallel instead of one round trip "
+    "per tool. Only sequence tool calls across turns when a later call genuinely "
+    "needs a piece of information only the earlier one's result provides."
 )
 
 # Constructed lazily, on first actual use, rather than at import time.
@@ -59,6 +79,51 @@ def _get_llm_with_tools():
     return _llm_with_tools
 
 
+def _trim_to_recent_turns(messages: list, max_turns: int = MAX_CONTEXT_TURNS) -> list:
+    """Groups messages into turns (each starting with a HumanMessage) and
+    keeps only the most recent max_turns turns.
+
+    Turns, not a raw message-count or token cutoff, are the only safe unit
+    to cut on here: when the model calls a tool, the resulting AIMessage
+    (with tool_calls) MUST be immediately followed by a ToolMessage for
+    every one of those calls, or the OpenAI API rejects the request
+    outright with a 400 — "tool_calls must be followed by tool messages".
+    A naive "keep the last N messages" trim could easily slice a turn in
+    half and leave a dangling tool call with no response, breaking every
+    subsequent call on that thread. Keeping whole turns intact makes that
+    structurally impossible.
+    """
+    if not messages:
+        return messages
+
+    turns: list[list] = []
+    current: list = []
+    for m in messages:
+        if isinstance(m, HumanMessage) and current:
+            turns.append(current)
+            current = [m]
+        else:
+            current.append(m)
+    if current:
+        turns.append(current)
+
+    if len(turns) <= max_turns:
+        return messages
+
+    kept = turns[-max_turns:]
+    return [m for turn in kept for m in turn]
+
+
+@with_retry()
+def _invoke_llm(llm, messages):
+    """Separated out from chatbot() purely so the retry decorator has a
+    single, obviously-scoped target — retrying "the network call to
+    OpenAI" is exactly right; retrying chatbot() as a whole would also
+    re-run the trimming/logging logic around it on every attempt, which
+    is harmless but noisy and not what's actually being retried."""
+    return llm.invoke(messages)
+
+
 def chatbot(state: State, config: RunnableConfig):
     thread_id = config.get("configurable", {}).get("user_id", "unknown")
     messages = state["messages"]
@@ -69,8 +134,35 @@ def chatbot(state: State, config: RunnableConfig):
     # type instead.
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=SYSTEM_PROMPT)] + list(messages)
+
+    system, rest = messages[0], messages[1:]
+    trimmed_rest = _trim_to_recent_turns(rest)
+    if len(trimmed_rest) < len(rest):
+        log_agent(
+            logger, thread_id,
+            f"trimmed context: {len(rest)} -> {len(trimmed_rest)} messages "
+            f"(kept last {MAX_CONTEXT_TURNS} turns)",
+        )
+    messages = [system] + trimmed_rest
+
     log_agent(logger, thread_id, f"invoking LLM with {len(messages)} messages in context")
-    response = _get_llm_with_tools().invoke(messages)
+    response = _invoke_llm(_get_llm_with_tools(), messages)
+
+    usage = getattr(response, "usage_metadata", None)
+    if usage:
+        # Local, always-on visibility into token usage/cost even without
+        # LangSmith configured (see main.py's _log_langsmith_tracing_status) —
+        # this is deliberately just a log line, not a billing system: no
+        # per-model $ pricing table to hand-maintain and let go stale.
+        # LangSmith (when enabled) already tracks real, current pricing
+        # centrally; this is the always-available fallback for local dev.
+        log_agent(
+            logger, thread_id,
+            f"token usage: {usage.get('input_tokens', '?')} in / "
+            f"{usage.get('output_tokens', '?')} out / "
+            f"{usage.get('total_tokens', '?')} total",
+        )
+
     if getattr(response, "tool_calls", None):
         tool_names = ", ".join(tc["name"] for tc in response.tool_calls)
         log_agent(logger, thread_id, f"model requested tool call(s): {tool_names}")
