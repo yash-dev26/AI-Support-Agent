@@ -1,13 +1,29 @@
-# Support Agent Infra — Durable Human-in-the-Loop AI Support
+# Durable Human-in-the-Loop AI Support Agent
 
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+[![CI](https://github.com/yash-dev26/AI-Support-Agent/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
 <!-- Replace OWNER/REPO with this repo's GitHub path once pushed. -->
+
 
 A stateful, multi-tenant AI support agent built on LangGraph, with MongoDB-backed
 persistence and a real escalation-to-human workflow. The agent looks up a
 user's cart, order history, and order status, searches company policy docs,
 and pauses execution mid-conversation to hand off to a human — then resumes
 exactly where it left off, with full state intact.
+
+
+
+![Python](https://img.shields.io/badge/-Python-14161A?style=flat-square&logo=python&logoColor=3776AB)
+![FastAPI](https://img.shields.io/badge/-FastAPI-14161A?style=flat-square&logo=fastapi&logoColor=009688)
+![LangGraph](https://img.shields.io/badge/-LangGraph-14161A?style=flat-square&logo=langchain&logoColor=1C3C3C)
+![MongoDB](https://img.shields.io/badge/-MongoDB-14161A?style=flat-square&logo=mongodb&logoColor=47A248)
+![Qdrant](https://img.shields.io/badge/-Qdrant-14161A?style=flat-square&logo=qdrant&logoColor=DC244C)
+![NeMo Guardrails](https://img.shields.io/badge/-NeMo_Guardrails-14161A?style=flat-square&logo=nvidia&logoColor=76B900)
+![LangSmith](https://img.shields.io/badge/-LangSmith-14161A?style=flat-square&logo=langchain&logoColor=1C3C3C)
+![Docker](https://img.shields.io/badge/-Docker-14161A?style=flat-square&logo=docker&logoColor=2496ED)
+![GitHub Actions](https://img.shields.io/badge/-GitHub_Actions-14161A?style=flat-square&logo=githubactions&logoColor=2088FF)
+![OpenAI](https://img.shields.io/badge/-OpenAI-14161A?style=flat-square&logo=openai&logoColor=FFFFFF)
+
+
 
 This is not a RAG project. It's about the infra problem underneath any AI
 support tool: what happens when the model can't or shouldn't answer, and a
@@ -18,9 +34,9 @@ HTML/JS demo lives in `frontend/`, built to make the human-in-the-loop flow
 watchable without curl commands (see [Demo](#demo)).
 
 Two companion docs go deeper than this README:
-[`REQUEST_FLOW.md`](./REQUEST_FLOW.md) traces every real flow step by step,
+- [`REQUEST_FLOW.md`](./REQUEST_FLOW.md) traces every real flow step by step,
 with function names, for a normal chat, an escalation, and a resolution.
-[`DECISIONS.md`](./DECISIONS.md) documents every non-obvious choice — what
+- [`DECISIONS.md`](./DECISIONS.md) documents every non-obvious choice — what
 was decided, what else was considered, and what it costs.
 
 ---
