@@ -1,7 +1,6 @@
 """
 Unit tests for the decoupled LLM factory and Grok (xAI) / OpenAI provider support.
 """
-import os
 import sys
 from pathlib import Path
 
@@ -117,7 +116,7 @@ def test_get_llm_with_tools_binds_tools():
 
 
 def test_reset_chat_model_clears_cached_instances():
-    m1 = llm.get_chat_model(api_key="sk-fake-1")
+    llm.get_chat_model(api_key="sk-fake-1")
     assert llm._default_chat_model is None  # had overrides, not cached
 
     # Without overrides, it should cache singleton
