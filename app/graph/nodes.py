@@ -5,11 +5,11 @@ to know about model config to wire nodes together.
 """
 import os
 
-from langchain.chat_models import init_chat_model
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.agent_logging import get_logger, log_agent
+from app.core.llm import get_llm_with_tools
 from app.core.retry import with_retry
 from app.graph.state import State
 from app.graph.tools import TOOLS
@@ -62,8 +62,8 @@ SYSTEM_PROMPT = (
 )
 
 # Constructed lazily, on first actual use, rather than at import time.
-# Building the OpenAI client eagerly here means importing this module (or
-# anything that imports it, like graph.py) requires a real OPENAI_API_KEY
+# Building the model client eagerly here means importing this module (or
+# anything that imports it, like graph.py) requires real credentials
 # even to test pure logic — e.g. route_after_tools has nothing to do with
 # the LLM, but a naive eager import chain would still demand credentials
 # just to run that test. Deferring construction until chatbot() actually
@@ -74,8 +74,7 @@ _llm_with_tools = None
 def _get_llm_with_tools():
     global _llm_with_tools
     if _llm_with_tools is None:
-        llm = init_chat_model(model_provider="openai", model="gpt-4.1")
-        _llm_with_tools = llm.bind_tools(tools=TOOLS)
+        _llm_with_tools = get_llm_with_tools(TOOLS)
     return _llm_with_tools
 
 

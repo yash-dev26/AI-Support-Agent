@@ -36,7 +36,11 @@ services:
       - "8000:8000"
     environment:
       MONGODB_URI: "mongodb://mongo:27017"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:?Set OPENAI_API_KEY in your .env or shell environment}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-}"
+      GROK_API_KEY: "${GROK_API_KEY:-}"
+      XAI_API_KEY: "${XAI_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-}"
       AUTH_SECRET_KEY: "${AUTH_SECRET_KEY:-}"
       CHECKPOINT_TTL_SECONDS: "${CHECKPOINT_TTL_SECONDS:-2592000}"
       MAX_CONTEXT_TURNS: "${MAX_CONTEXT_TURNS:-12}"

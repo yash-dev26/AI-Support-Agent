@@ -24,18 +24,20 @@ logger = logging.getLogger("support_agent.retry")
 # fail again identically on retry — retrying those just delays reporting
 # a failure that was never going to succeed, so they're deliberately
 # excluded rather than caught by a blanket `except openai.OpenAIError`.
-RETRYABLE_OPENAI_ERRORS = (
+# Grok (xAI) errors share these exact exception types through the client SDK.
+RETRYABLE_LLM_ERRORS = (
     openai.APIConnectionError,   # includes APITimeoutError (subclass)
     openai.RateLimitError,
     openai.InternalServerError,
 )
+RETRYABLE_OPENAI_ERRORS = RETRYABLE_LLM_ERRORS
 
 
 def with_retry(
     max_attempts: int = 3,
     base_delay: float = 0.5,
     max_delay: float = 8.0,
-    retryable: tuple = RETRYABLE_OPENAI_ERRORS,
+    retryable: tuple = RETRYABLE_LLM_ERRORS,
 ):
     """Wraps a function to retry on the given exception types with
     exponential backoff plus jitter. NEVER swallows a failure silently —

@@ -391,3 +391,13 @@ name. The one real interaction worth knowing: a ticket tied to a thread
 that expires while still escalated does not expire with it —
 `ticket_store`'s collection has no TTL of its own, so it stays `open`
 until a human resolves it. See README's Known Limitations.
+
+---
+
+## Chat completions are decoupled from specific model providers (OpenAI & Grok/xAI)
+
+**Decision:** Chat completion model instantiation is centralized in `app/core/llm.py` via `get_chat_model()` and `get_llm_with_tools()`, rather than hardcoding `init_chat_model(model_provider="openai", model="gpt-4.1")` directly into graph nodes, RAG generation, and guardrails. Both OpenAI and xAI's Grok API are first-class supported providers, configured dynamically via `LLM_PROVIDER`, `GROK_API_KEY`/`XAI_API_KEY`, `OPENAI_API_KEY`, and related env vars.
+
+**Alternatives considered:** Keeping OpenAI hardcoded, or using provider-specific if/else branches directly inside `nodes.py` and `policy_engine.py`.
+
+**Tradeoff:** Introducing `app/core/llm.py` creates a clean single point of configuration for chat completions across the application, with sensible defaults and auto-detection based on available API keys. Retrieval embeddings (`app/services/vector_store.py`) remain on OpenAI (`text-embedding-3-small`) because xAI does not currently provide a dedicated embeddings API.

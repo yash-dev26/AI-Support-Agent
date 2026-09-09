@@ -41,12 +41,23 @@ _rails = None
 
 
 def _get_rails() -> LLMRails:
-    """Constructed lazily so importing this module doesn't require a real
-    OPENAI_API_KEY — only the first actual check does (RailsConfig parsing
+    """Constructed lazily so importing this module doesn't require real
+    credentials — only the first actual check does (RailsConfig parsing
     is just YAML/Colang, no LLM call happens at construction time)."""
     global _rails
     if _rails is None:
+        from app.core.llm import get_llm_settings
+
+        settings = get_llm_settings()
         config = RailsConfig.from_path(str(CONFIG_PATH))
+        if config.models:
+            config.models[0].model = settings.model
+            params = dict(config.models[0].parameters or {})
+            if settings.base_url:
+                params["base_url"] = settings.base_url
+            if settings.api_key:
+                params["api_key"] = settings.api_key
+            config.models[0].parameters = params
         _rails = LLMRails(config)
     return _rails
 

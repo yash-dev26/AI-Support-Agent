@@ -129,8 +129,8 @@ def cache_info() -> dict:
 
 def _generate_cited_answer(query: str, hits: list[dict]) -> str:
     from langchain_core.messages import SystemMessage, HumanMessage
-    from langchain.chat_models import init_chat_model
 
+    from app.core.llm import get_chat_model
     from app.core.retry import with_retry
 
     context = "\n\n".join(f"[{h['doc_name']}] {h['text']}" for h in hits)
@@ -139,7 +139,7 @@ def _generate_cited_answer(query: str, hits: list[dict]) -> str:
         "document name(s) in brackets, e.g. [refund_policy.md]. If the context "
         "does not actually answer the question, respond with exactly: NO_ANSWER_FOUND"
     )
-    llm = init_chat_model(model_provider="openai", model="gpt-4.1")
+    llm = get_chat_model()
 
     @with_retry()
     def _invoke():

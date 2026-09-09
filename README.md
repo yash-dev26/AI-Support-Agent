@@ -322,16 +322,26 @@ curl http://localhost:8000/metrics
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # fill in MONGODB_URI and OPENAI_API_KEY
+cp .env.example .env   # fill in MONGODB_URI and OPENAI_API_KEY or GROK_API_KEY
 ```
 
-Guardrails reuse the same `OPENAI_API_KEY` (`app/data/guardrails_config/config.yml`
-points at `gpt-4.1`) — no separate credential needed.
+### LLM Providers & Grok Support
 
-**Optional env vars:**
+Chat completions are decoupled across the agent loop, RAG policy engine, and guardrails via `app/core/llm.py`. Supported providers:
+- **OpenAI** (default): requires `OPENAI_API_KEY`. Defaults to `gpt-4.1`.
+- **Grok (xAI)**: set `LLM_PROVIDER=grok` and provide `GROK_API_KEY` (or `XAI_API_KEY`). Defaults to `grok-2` at `https://api.x.ai/v1`.
+
+Guardrails automatically adapt to the configured model provider — no manual YAML edits needed. Note that retrieval embeddings (`app/services/vector_store.py`) continue to use `text-embedding-3-small` via OpenAI.
+
+**Configuration env vars:**
 
 | Variable | Default | Effect |
 |---|---|---|
+| `LLM_PROVIDER` | `openai` (or `grok` if only `GROK_API_KEY` set) | Primary LLM provider: `openai` or `grok` (alias `xai`). |
+| `LLM_MODEL` | `gpt-4.1` (OpenAI) / `grok-2` (Grok) | Model name override (e.g. `grok-2`, `grok-2-latest`, `grok-beta`). |
+| `GROK_API_KEY` / `XAI_API_KEY` | unset | xAI credentials for Grok API. |
+| `OPENAI_API_KEY` | unset | OpenAI credentials for OpenAI models & embeddings. |
+| `LLM_BASE_URL` | unset (OpenAI) / `https://api.x.ai/v1` (Grok) | Custom base URL for completions. |
 | `MAX_CONTEXT_TURNS` | `12` | Caps how many recent turns get sent to the LLM per call — cuts on whole-turn boundaries, never mid-tool-call. |
 | `CHECKPOINT_TTL_SECONDS` | `2592000` (30 days) | How long a thread's checkpointed state survives before MongoDB's TTL index expires it. `0` disables. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | unset | Traces every LLM/tool call to LangSmith. No code changes needed — LangChain auto-instruments. The app logs a one-line confirmation at startup either way. Without it, token usage is still logged locally per call as a zero-config fallback. |
